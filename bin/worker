@@ -1,0 +1,78 @@
+#!/usr/bin/env php
+<?php
+
+/**
+ * Applies the queued changes.
+ *
+ * Usage: worker [--every=SECONDS]
+ *
+ *   By default, processes the queue once and exits: run it on a schedule,
+ *   e.g. as an OpenShift CronJob every 30 minutes.
+ *
+ *   --every=SECONDS  Keep running and process the queue every SECONDS. For
+ *                    places without a scheduler, like docker compose.
+ *
+ * Only one worker runs at a time: a second one exits right away (code 0)
+ * while the first holds the lock in the queue folder.
+ */
+
+declare(strict_types=1);
+
+use App\CrawlerConfig;
+use App\Log;
+use App\Queue\QueueFolder;
+use App\Queue\Spool;
+use App\Worker\Reindexer;
+
+require dirname(__DIR__) . '/vendor/autoload.php';
+
+// The webhook runs as a different UID and shares only the group, so whatever
+// we create in the queue folder must be group-writable.
+umask(0002);
+
+$options = getopt('', ['every:']);
+$every = isset($options['every']) ? (int) $options['every'] : null;
+if ($every !== null && $every < 1) {
+    fwrite(STDERR, "--every must be a positive number of seconds.\n");
+    exit(2);
+}
+
+$queue = new Spool(QueueFolder::default());
+$reindexer = new Reindexer($queue, CrawlerConfig::path());
+
+if (!$queue->lock()) {
+    Log::info('Another worker is running; nothing to do.');
+    exit(0);
+}
+
+// A batch left in processing/ belongs to a worker that was killed before it
+// finished (e.g. a CronJob pod past its deadline): put it back.
+if (($released = $queue->releaseAll()) > 0) {
+    Log::info("Returned $released unfinished change(s) to the queue.");
+}
+
+// Stop between batches on SIGTERM (pod shutdown, `docker compose stop`). The
+// signal also wakes the sleep() below. A crawl in progress is left to finish;
+// if the process is killed first, the next run returns its batch to the queue.
+$running = true;
+pcntl_async_signals(true);
+foreach ([SIGTERM, SIGINT] as $signal) {
+    pcntl_signal($signal, function () use (&$running): void {
+        $running = false;
+    });
+}
+
+do {
+    $ok = $reindexer->run();
+    if ($every === null) {
+        break;
+    }
+
+    Log::info("Next run in {$every}s.");
+    $until = time() + $every;
+    while ($running && time() < $until) {
+        sleep(max(1, $until - time()));
+    }
+} while ($running);
+
+exit($ok ? 0 : 1);

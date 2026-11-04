@@ -1,0 +1,12 @@
+# Local settings and secrets (WEBHOOK_TOKEN).
+.env
+.env.local
+
+# Composer dependencies; installed during the image builds.
+/vendor/
+
+# Local runtime data (the queue folder).
+/var/
+
+# IDE settings.
+/.idea/

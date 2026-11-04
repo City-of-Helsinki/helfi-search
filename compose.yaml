@@ -1,0 +1,150 @@
+name: helfi-search
+
+# Local setup behind Stonehenge (Traefik): the webhook is reachable at
+# https://webhook-helfi-search.docker.so. Requires Stonehenge to be running
+# (it creates the external stonehenge-network).
+#
+# Only the webhook joins stonehenge-network, which other projects share.
+# Everything else stays on the project's own network.
+
+services:
+  # Only the crawler and the worker use it, over the internal network. To
+  # query it: docker compose exec crawler-elastic curl -s localhost:9200/...
+  crawler-elastic:
+    image: docker.elastic.co/elasticsearch/elasticsearch:9.5.3
+    environment:
+      - discovery.type=single-node
+      - bootstrap.memory_lock=true
+      - "ES_JAVA_OPTS=-Xms512m -Xmx512m"
+      - xpack.security.enabled=false
+    ulimits:
+      memlock:
+        soft: -1
+        hard: -1
+    volumes:
+      - elastic_data:/usr/share/elasticsearch/data
+    healthcheck:
+      # A single node can't allocate replicas, so the cluster stays yellow once
+      # it has indexes with replicas.
+      test: ["CMD-SHELL", "curl -fs 'http://localhost:9200/_cluster/health?wait_for_status=yellow&timeout=1s' || exit 1"]
+      interval: 1s
+      timeout: 1s
+      retries: 60
+    networks:
+      - internal
+
+  # Creates (or updates) the ingest pipeline used by the crawler, then exits.
+  pipeline:
+    image: docker.elastic.co/elasticsearch/elasticsearch:9.5.3
+    entrypoint:
+      - curl
+      - -fsS
+      - -X
+      - PUT
+      - http://crawler-elastic:9200/_ingest/pipeline/hel-fi
+      - -H
+      - "Content-Type: application/json"
+      - --data-binary
+      - "@/pipeline.json"
+    volumes:
+      - ./config/pipeline.json:/pipeline.json:ro
+    networks:
+      - internal
+    depends_on:
+      crawler-elastic:
+        condition: service_healthy
+
+  # The webhook, worker and crawler run the PHP code from the project folder
+  # (mounted over /app), so changes apply without rebuilding. Install the
+  # dependencies with: docker compose exec webhook composer install
+  #
+  # They're built with docker/local/Dockerfile on the dev tags of the base
+  # images from City-of-Helsinki/drupal-docker-images (helfi-search-webhook,
+  # helfi-search-elasticsearch-crawler), adding Composer and running as UID
+  # 1000 in group 0, so they can write vendor/ into the project folder. The
+  # production images are built with docker/openshift/*/Dockerfile.
+  #
+  # The queue folder is var/queue in the project folder (ignored by git).
+
+  # Full crawl. Locally limited to about CRAWL_LIMIT_PER_DOMAIN URLs per site
+  # (default 50) to keep development fast; set it to 0 for a complete crawl.
+  # Limited crawls skip the purge step, so documents from earlier crawls stay.
+  # See bin/crawl.
+  crawler:
+    build:
+      context: .
+      dockerfile: docker/local/Dockerfile
+      target: elasticsearch-crawler
+    image: helfi-search-elasticsearch-crawler-local
+    # Like OpenShift's restricted SCC: no capabilities, no privilege escalation.
+    cap_drop: [ALL]
+    security_opt: ["no-new-privileges:true"]
+    command: ["php", "/app/bin/crawl", "--limit-per-domain=${CRAWL_LIMIT_PER_DOMAIN:-50}"]
+    volumes:
+      - .:/app:delegated
+    networks:
+      - internal
+    depends_on:
+      crawler-elastic:
+        condition: service_healthy
+      pipeline:
+        condition: service_completed_successfully
+
+  # Receives content update notifications and writes them into the queue
+  # folder. It never talks to the crawler or Elasticsearch: the queue folder is
+  # the only thing it shares with the worker at runtime (the file format is in
+  # src/Queue/QueueFolder.php). It reads config/crawler.yml only for the list of sites
+  # to accept.
+  webhook:
+    build:
+      context: .
+      dockerfile: docker/local/Dockerfile
+      target: webhook
+    image: helfi-search-webhook-local
+    cap_drop: [ALL]
+    security_opt: ["no-new-privileges:true"]
+    environment:
+      WEBHOOK_TOKEN: ${WEBHOOK_TOKEN:-}
+    volumes:
+      - .:/app:delegated
+    networks:
+      - stonehenge-network
+    labels:
+      - "traefik.enable=true"
+      - "traefik.http.routers.helfi-search-webhook.entrypoints=https"
+      - "traefik.http.routers.helfi-search-webhook.rule=Host(`webhook-helfi-search.docker.so`)"
+      - "traefik.http.routers.helfi-search-webhook.tls=true"
+      - "traefik.http.services.helfi-search-webhook.loadbalancer.server.port=8080"
+      - "traefik.docker.network=stonehenge-network"
+
+  # Applies the queued changes every 30 minutes.
+  #
+  # Compose has no scheduler, so here the worker loops by itself (--every).
+  # On OpenShift it runs as a CronJob instead: the production image's default
+  # command processes the queue once and exits.
+  worker:
+    build:
+      context: .
+      dockerfile: docker/local/Dockerfile
+      target: elasticsearch-crawler
+    image: helfi-search-elasticsearch-crawler-local
+    cap_drop: [ALL]
+    security_opt: ["no-new-privileges:true"]
+    command: ["php", "/app/bin/worker", "--every=1800"]
+    volumes:
+      - .:/app:delegated
+    networks:
+      - internal
+    depends_on:
+      crawler-elastic:
+        condition: service_healthy
+      pipeline:
+        condition: service_completed_successfully
+
+networks:
+  internal:
+  stonehenge-network:
+    external: true
+
+volumes:
+  elastic_data:

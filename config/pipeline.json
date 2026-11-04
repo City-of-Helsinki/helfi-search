@@ -1,0 +1,19 @@
+{
+  "description": "Drops crawler fields that shouldn't be indexed.",
+  "processors": [
+    {
+      "remove": {
+        "description": "links and headings are built from the whole page, including the menus and footer.",
+        "field": ["links", "headings"],
+        "ignore_missing": true
+      }
+    },
+    {
+      "remove": {
+        "description": "The crawler adds these pipeline parameters to every document. They're meant for Elastic's ent-search-generic-ingestion pipeline, which Elasticsearch 9 no longer installs.",
+        "field": ["_reduce_whitespace", "_run_ml_inference", "_extract_binary_content"],
+        "ignore_missing": true
+      }
+    }
+  ]
+}

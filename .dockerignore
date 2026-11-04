@@ -1,0 +1,10 @@
+# The build context is the repository root (see docker/openshift/*/Dockerfile).
+# Only composer.json, composer.lock, src/, public/, bin/ and config/ are used;
+# keep everything else out, above all .env (it holds WEBHOOK_TOKEN).
+*
+!composer.json
+!composer.lock
+!src/
+!public/
+!bin/
+!config/
