@@ -15,6 +15,7 @@ use App\Tests\Unit\CollectingLogger;
 use App\Tests\Unit\TemporaryDirectoryTrait;
 use App\Worker\Crawler;
 use App\Worker\Elasticsearch;
+use App\Worker\FailedDocumentCounter;
 use App\Worker\Reindexer;
 use PHPUnit\Framework\Attributes\CoversClass;
 use PHPUnit\Framework\Attributes\UsesClass;
@@ -22,6 +23,7 @@ use PHPUnit\Framework\TestCase;
 
 #[CoversClass(Reindexer::class)]
 #[UsesClass(Crawler::class)]
+#[UsesClass(FailedDocumentCounter::class)]
 #[UsesClass(CrawlerConfig::class)]
 #[UsesClass(Elasticsearch::class)]
 #[UsesClass(QueueFolder::class)]

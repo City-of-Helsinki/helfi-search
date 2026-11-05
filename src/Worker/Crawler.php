@@ -51,30 +51,24 @@ final class Crawler
 
         try {
             $process = new Process(['bin/crawler', 'crawl', $file], $this->home, timeout: null);
-            $process->run($this->output);
+            // Count rejected documents as the output streams past, instead of
+            // reading it all at the end: a large failing crawl can log more
+            // than PHP's memory limit.
+            $counter = new FailedDocumentCounter();
+            $process->run(function (string $type, string $text) use ($counter): void {
+                ($this->output)($type, $text);
+                $counter->read($type, $text);
+            });
             if (!$process->isSuccessful()) {
                 throw new \RuntimeException("The crawler exited with code {$process->getExitCode()}.");
             }
 
-            // The crawler reports success and exits with 0 even when
-            // Elasticsearch rejects every document, so check its summary.
-            $failed = self::failedDocuments($process->getOutput());
+            $failed = $counter->failed();
             if ($failed > 0) {
                 throw new \RuntimeException("$failed document(s) failed to index; see the crawler output above.");
             }
         } finally {
             $this->filesystem->remove($file);
         }
-    }
-
-    /**
-     * Reads the number of failed documents from the crawler's summary:
-     * "Number of documents that failed to index: <n>".
-     */
-    private static function failedDocuments(string $output): int
-    {
-        preg_match_all('/Number of documents that failed to index: (\d+)/', $output, $matches);
-
-        return array_sum(array_map('intval', $matches[1]));
     }
 }

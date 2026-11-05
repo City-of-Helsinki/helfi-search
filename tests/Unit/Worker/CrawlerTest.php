@@ -6,12 +6,15 @@ namespace App\Tests\Unit\Worker;
 
 use App\Tests\Unit\TemporaryDirectoryTrait;
 use App\Worker\Crawler;
+use App\Worker\FailedDocumentCounter;
 use PHPUnit\Framework\Attributes\CoversClass;
+use PHPUnit\Framework\Attributes\UsesClass;
 use PHPUnit\Framework\TestCase;
 use Symfony\Component\Process\Process;
 use Symfony\Component\Yaml\Yaml;
 
 #[CoversClass(Crawler::class)]
+#[UsesClass(FailedDocumentCounter::class)]
 final class CrawlerTest extends TestCase
 {
     use TemporaryDirectoryTrait;
