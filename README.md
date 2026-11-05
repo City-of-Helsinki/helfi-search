@@ -25,54 +25,38 @@ The webhook and the worker share only the queue folder (`var/queue`).
 Requires [Stonehenge](https://github.com/druidfi/stonehenge).
 
 ```bash
-printf 'WEBHOOK_TOKEN=%s\n' "$(openssl rand -hex 24)" > .env
-docker compose build --pull
-docker compose run --rm --no-deps --entrypoint composer webhook install
-docker compose up -d
+make setup
 ```
 
-This starts Elasticsearch, the webhook and the worker, and runs a full crawl
-limited to about 50 pages per site.
+This creates `.env` (the webhook token, and your UID: the services run as
+your user, so the files they create belong to you), builds the images,
+installs the dependencies, and starts Elasticsearch, the webhook and the worker, with a
+full crawl limited to about 50 pages per site.
 
 - Webhook: https://webhook-helfi-search.docker.so
-- Elasticsearch (no public URL):
-  `docker compose exec crawler-elastic curl -s "localhost:9200/hel-fi/_search?pretty"`
+- Elasticsearch has no public URL: `make search` shows the indexed documents.
 
 The code is mounted into the containers, so changes apply without rebuilding
-(restart the looping worker with `docker compose restart worker`). The
-services run as UID 1000; if yours differs, set `user: "<UID>:0"` in
-`compose.yaml`.
+(`make restart-worker` for the looping worker).
 
-Common commands:
+`make help` lists all commands. The common ones:
 
 ```bash
-# Full crawl, about 50 pages per site; 0 crawls everything
-docker compose run --rm crawler
-CRAWL_LIMIT_PER_DOMAIN=0 docker compose run --rm crawler
-
-# Process the queue now (stop the looping worker first: it holds the lock)
-docker compose stop worker
-docker compose run --rm worker php /app/bin/worker
-docker compose start worker
-
-# Composer
-docker compose exec webhook composer require vendor/package
+make crawl              # Full crawl, about 50 pages per site (LIMIT=10 to change)
+make crawl-all          # Full crawl of every page
+make process-queue      # Apply the queued changes now
+make composer ARGS="require vendor/package"
 ```
 
 ## Tests
 
 ```bash
-# Unit tests
-docker compose exec webhook vendor/bin/phpunit
-# With coverage (PCOV, off by default)
-docker compose exec webhook php -d pcov.enabled=1 vendor/bin/phpunit --coverage-text
-# Integration tests: the real crawler and Elasticsearch, against a fake site
-docker compose run --rm worker vendor/bin/phpunit --testsuite integration
-
-# Coding standard (PSR-12) and static analysis (PHPStan, level max)
-docker compose exec webhook vendor/bin/phpcs
-docker compose exec webhook vendor/bin/phpcbf   # fixes what it can
-docker compose exec webhook vendor/bin/phpstan analyse
+make test               # Unit tests
+make coverage           # Unit tests with coverage (PCOV)
+make test-integration   # The real crawler and Elasticsearch, against a fake site
+make phpcs              # Coding standard (PSR-12); make phpcbf fixes what it can
+make phpstan            # Static analysis (PHPStan, level max)
+make check              # All of the above, except coverage
 ```
 
 GitHub Actions ([test.yml](.github/workflows/test.yml)) runs the same setup
@@ -129,8 +113,7 @@ The images build on base images from
 `latest` by default, `dev` in the testing and staging environments.
 
 ```bash
-docker build -f docker/openshift/webhook/Dockerfile .
-docker build -f docker/openshift/worker/Dockerfile .
+make build-openshift                      # DOCKER_BUILD_TAG=dev for the dev base images
 ```
 
 | Resource | Notes |

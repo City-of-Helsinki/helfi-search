@@ -12,9 +12,6 @@ concurrency:
 jobs:
   tests:
     runs-on: ubuntu-latest
-    env:
-      # compose.ci.yaml runs the services as the runner's user.
-      COMPOSE_FILE: compose.yaml:compose.ci.yaml
     steps:
       - uses: actions/checkout@de0fac2e4500dabe0009e67214ff5f5447ce83dd # v6.0.2
         with:
@@ -25,8 +22,10 @@ jobs:
 
       - uses: actions/checkout@de0fac2e4500dabe0009e67214ff5f5447ce83dd # v6.0.2
 
+      # A random token, and LOCAL_UID: the services run as the runner's user,
+      # so they can write vendor/ and the results into the checkout.
       - name: Create .env
-        run: printf 'WEBHOOK_TOKEN=%s\n' "$(openssl rand -hex 24)" > .env
+        run: make env
 
       - name: Build images
         run: docker compose build --pull

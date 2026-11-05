@@ -60,9 +60,10 @@ services:
   #
   # They're built with docker/local/Dockerfile on the dev tags of the base
   # images from City-of-Helsinki/drupal-docker-images (helfi-search-webhook,
-  # helfi-search-elasticsearch-crawler), adding Composer and running as UID
-  # 1000 in group 0, so they can write vendor/ into the project folder. The
-  # production images are built with docker/openshift/*/Dockerfile.
+  # helfi-search-elasticsearch-crawler), adding Composer. They run as your
+  # user (LOCAL_UID in .env, set by make setup) in group 0, so they can write
+  # vendor/ into the project folder. The production images are built with
+  # docker/openshift/*/Dockerfile.
   #
   # The queue folder is var/queue in the project folder (ignored by git).
 
@@ -76,6 +77,7 @@ services:
       dockerfile: docker/local/Dockerfile
       target: elasticsearch-crawler
     image: helfi-search-elasticsearch-crawler-local
+    user: "${LOCAL_UID:-1000}:0"
     # Like OpenShift's restricted SCC: no capabilities, no privilege escalation.
     cap_drop: [ALL]
     security_opt: ["no-new-privileges:true"]
@@ -101,6 +103,7 @@ services:
       dockerfile: docker/local/Dockerfile
       target: webhook
     image: helfi-search-webhook-local
+    user: "${LOCAL_UID:-1000}:0"
     cap_drop: [ALL]
     security_opt: ["no-new-privileges:true"]
     environment:
@@ -128,6 +131,7 @@ services:
       dockerfile: docker/local/Dockerfile
       target: elasticsearch-crawler
     image: helfi-search-elasticsearch-crawler-local
+    user: "${LOCAL_UID:-1000}:0"
     cap_drop: [ALL]
     security_opt: ["no-new-privileges:true"]
     command: ["php", "/app/bin/worker", "--every=1800"]
