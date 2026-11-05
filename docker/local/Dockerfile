@@ -8,6 +8,10 @@ FROM ghcr.io/city-of-helsinki/helfi-search-webhook:dev AS webhook
 
 USER root
 COPY --from=composer:2 /usr/bin/composer /usr/local/bin/composer
+# PCOV, for test coverage. Off by default, because it slows down every
+# request; coverage runs enable it with -d pcov.enabled=1.
+RUN install-php-extensions pcov \
+    && echo 'pcov.enabled=0' > "$PHP_INI_DIR/conf.d/zz-pcov.ini"
 # Check changed files on every request instead of every 2 seconds.
 RUN echo 'opcache.revalidate_freq=0' > "$PHP_INI_DIR/conf.d/zz-local.ini"
 
@@ -21,8 +25,9 @@ USER 1000:0
 FROM ghcr.io/city-of-helsinki/helfi-search-elasticsearch-crawler:dev AS elasticsearch-crawler
 
 USER root
-# phar and openssl are needed by Composer.
-RUN apk add --no-cache php-8.4-phar php-8.4-openssl
+# phar and openssl are needed by Composer; dom, xml and xmlwriter by PHPUnit,
+# for the integration tests (tests/Integration), which need the crawler.
+RUN apk add --no-cache php-8.4-phar php-8.4-openssl php-8.4-dom php-8.4-xml php-8.4-xmlwriter
 COPY --from=composer:2 /usr/bin/composer /usr/local/bin/composer
 
 ENV COMPOSER_HOME=/tmp/composer

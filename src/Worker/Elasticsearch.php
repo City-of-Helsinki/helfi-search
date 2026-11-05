@@ -30,8 +30,7 @@ final class Elasticsearch
         $credentials = $config->elasticsearchCredentials();
         if (isset($credentials['api_key'])) {
             $options[RequestOptions::HEADERS] = ['Authorization' => 'ApiKey ' . $credentials['api_key']];
-        }
-        elseif (isset($credentials['username'])) {
+        } elseif (isset($credentials['username'])) {
             $options[RequestOptions::AUTH] = [$credentials['username'], $credentials['password'] ?? ''];
         }
 
@@ -56,8 +55,8 @@ final class Elasticsearch
                     RequestOptions::HTTP_ERRORS => false,
                     RequestOptions::TIMEOUT => 5,
                 ]);
-                $status = json_decode((string) $response->getBody(), true)['status'] ?? null;
-                if (in_array($status, ['green', 'yellow'], true)) {
+                $health = json_decode((string) $response->getBody(), true);
+                if (is_array($health) && in_array($health['status'] ?? null, ['green', 'yellow'], true)) {
                     return;
                 }
             } catch (\GuzzleHttp\Exception\GuzzleException) {
@@ -110,6 +109,6 @@ final class Elasticsearch
 
         $body = json_decode((string) $response->getBody(), true, flags: JSON_THROW_ON_ERROR);
 
-        return (int) ($body['deleted'] ?? 0);
+        return is_array($body) && is_int($body['deleted'] ?? null) ? $body['deleted'] : 0;
     }
 }

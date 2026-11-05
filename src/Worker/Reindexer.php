@@ -5,9 +5,9 @@ declare(strict_types=1);
 namespace App\Worker;
 
 use App\CrawlerConfig;
-use App\Log;
 use App\Queue\Action;
 use App\Queue\Spool;
+use Psr\Log\LoggerInterface;
 
 /**
  * Processes one batch of queued changes.
@@ -20,6 +20,7 @@ final class Reindexer
     public function __construct(
         private readonly Spool $queue,
         private readonly string $crawlerConfigPath,
+        private readonly LoggerInterface $logger,
         private readonly Crawler $crawler = new Crawler(),
     ) {
     }
@@ -34,13 +35,17 @@ final class Reindexer
     {
         [$batch, $actions] = $this->queue->claim();
         if (!$actions) {
-            Log::info('Queue is empty.');
+            $this->logger->info('Queue is empty.');
             return true;
         }
 
         $updates = array_keys(array_filter($actions, fn (Action $a): bool => $a === Action::Update));
         $deletes = array_keys(array_filter($actions, fn (Action $a): bool => $a === Action::Delete));
-        Log::info(sprintf('Processing batch %s: %d update(s), %d delete(s).', $batch, count($updates), count($deletes)));
+        $this->logger->info('Processing batch {batch}: {updates} update(s), {deletes} delete(s).', [
+            'batch' => $batch,
+            'updates' => count($updates),
+            'deletes' => count($deletes),
+        ]);
 
         try {
             // Read the config on every run so edits apply without a restart.
@@ -49,19 +54,23 @@ final class Reindexer
             if ($deletes) {
                 $es = Elasticsearch::fromConfig($config);
                 $deleted = $es->deleteByUrls($deletes);
-                Log::info("Deleted $deleted document(s).");
+                $this->logger->info('Deleted {count} document(s).', ['count' => $deleted]);
             }
             if ($updates) {
                 $this->crawler->crawl($this->targetedConfig($config, $updates));
             }
         } catch (\Throwable $e) {
             $this->queue->release($batch);
-            Log::error("Batch $batch failed and was returned to the queue: {$e->getMessage()}");
+            $this->logger->error('Batch {batch} failed and was returned to the queue: {error}', [
+                'batch' => $batch,
+                'error' => $e->getMessage(),
+                'exception' => $e,
+            ]);
             return false;
         }
 
         $this->queue->complete($batch);
-        Log::info("Batch $batch done.");
+        $this->logger->info('Batch {batch} done.', ['batch' => $batch]);
         return true;
     }
 
@@ -78,26 +87,28 @@ final class Reindexer
             $domain = $config->domainFor($url);
             // The webhook checks this, but crawler.yml may have changed since.
             if ($domain === null) {
-                Log::warning("Skipping $url: its site is no longer in crawler.yml.");
+                $this->logger->warning('Skipping {url}: its site is no longer in crawler.yml.', ['url' => $url]);
                 continue;
             }
             $seeds[$domain][] = $url;
         }
 
-        $result = $config->toArray();
         // Keep each domain's own settings (exclude_tags, extraction rules),
         // but only for the domains in this batch.
-        $result['domains'] = [];
-        foreach ($config->toArray()['domains'] as $domain) {
-            if (isset($seeds[$domain['url']])) {
+        $domains = [];
+        foreach ($config->domains() as $site => $domain) {
+            if (isset($seeds[$site])) {
                 unset($domain['sitemap_urls']);
-                $domain['seed_urls'] = $seeds[$domain['url']];
-                $result['domains'][] = $domain;
+                $domain['seed_urls'] = $seeds[$site];
+                $domains[] = $domain;
             }
         }
-        if (!$result['domains']) {
+        if (!$domains) {
             throw new \RuntimeException('None of the URLs belong to a configured site.');
         }
+
+        $result = $config->toArray();
+        $result['domains'] = $domains;
 
         // Seeds are depth 1, so this stops the crawler from following links.
         $result['max_crawl_depth'] = 1;

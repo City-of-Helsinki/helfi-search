@@ -13,13 +13,24 @@ use Symfony\Component\Yaml\Yaml;
  */
 final class Crawler
 {
+    /** @var \Closure(string, string): void */
+    private readonly \Closure $output;
+
     /**
      * @param string $home The Open Crawler install directory.
+     * @param (\Closure(string, string): void)|null $output Receives the
+     *   crawler's output as it runs: the type (Process::OUT or Process::ERR)
+     *   and the text. By default it goes to this process's stdout and stderr,
+     *   i.e. the container log.
      */
     public function __construct(
         private readonly string $home = '/home/app',
         private readonly Filesystem $filesystem = new Filesystem(),
+        ?\Closure $output = null,
     ) {
+        $this->output = $output ?? static function (string $type, string $text): void {
+            fwrite($type === Process::ERR ? STDERR : STDOUT, $text);
+        };
     }
 
     /**
@@ -40,10 +51,7 @@ final class Crawler
 
         try {
             $process = new Process(['bin/crawler', 'crawl', $file], $this->home, timeout: null);
-            // Pass the crawler's output straight to this container's log.
-            $process->run(function (string $type, string $output): void {
-                fwrite($type === Process::ERR ? STDERR : STDOUT, $output);
-            });
+            $process->run($this->output);
             if (!$process->isSuccessful()) {
                 throw new \RuntimeException("The crawler exited with code {$process->getExitCode()}.");
             }

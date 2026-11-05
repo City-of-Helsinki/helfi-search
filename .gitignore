@@ -8,5 +8,11 @@
 # Local runtime data (the queue folder).
 /var/
 
+# PHPUnit's cache.
+/.phpunit.cache/
+
+# Test results and logs (GitHub Actions).
+/results/
+
 # IDE settings.
 /.idea/

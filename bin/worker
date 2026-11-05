@@ -19,9 +19,9 @@
 declare(strict_types=1);
 
 use App\CrawlerConfig;
-use App\Log;
 use App\Queue\QueueFolder;
 use App\Queue\Spool;
+use App\StderrLogger;
 use App\Worker\Reindexer;
 
 require dirname(__DIR__) . '/vendor/autoload.php';
@@ -37,18 +37,19 @@ if ($every !== null && $every < 1) {
     exit(2);
 }
 
-$queue = new Spool(QueueFolder::default());
-$reindexer = new Reindexer($queue, CrawlerConfig::path());
+$logger = new StderrLogger();
+$queue = new Spool(QueueFolder::default(), $logger);
+$reindexer = new Reindexer($queue, CrawlerConfig::path(), $logger);
 
 if (!$queue->lock()) {
-    Log::info('Another worker is running; nothing to do.');
+    $logger->info('Another worker is running; nothing to do.');
     exit(0);
 }
 
 // A batch left in processing/ belongs to a worker that was killed before it
 // finished (e.g. a CronJob pod past its deadline): put it back.
 if (($released = $queue->releaseAll()) > 0) {
-    Log::info("Returned $released unfinished change(s) to the queue.");
+    $logger->info('Returned {count} unfinished change(s) to the queue.', ['count' => $released]);
 }
 
 // Stop between batches on SIGTERM (pod shutdown, `docker compose stop`). The
@@ -68,7 +69,7 @@ do {
         break;
     }
 
-    Log::info("Next run in {$every}s.");
+    $logger->info('Next run in {seconds}s.', ['seconds' => $every]);
     $until = time() + $every;
     while ($running && time() < $until) {
         sleep(max(1, $until - time()));

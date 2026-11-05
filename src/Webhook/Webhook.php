@@ -4,11 +4,11 @@ declare(strict_types=1);
 
 namespace App\Webhook;
 
-use App\Log;
 use App\Queue\Action;
 use App\Queue\QueueWriter;
 use App\Queue\Request as QueueRequest;
 use App\Site;
+use Psr\Log\LoggerInterface;
 use Symfony\Component\HttpFoundation\JsonResponse;
 use Symfony\Component\HttpFoundation\Request;
 use Symfony\Component\HttpFoundation\Response;
@@ -38,6 +38,7 @@ final class Webhook
      */
     public function __construct(
         private readonly QueueWriter $queue,
+        private readonly LoggerInterface $logger,
         private readonly string $token,
         array $allowedSites,
     ) {
@@ -87,7 +88,10 @@ final class Webhook
             $data = null;
         }
         if (!is_string($data['url'] ?? null)) {
-            return $this->error(Response::HTTP_BAD_REQUEST, 'Expected a JSON body like {"url": "https://...", "action": "update"}.');
+            return $this->error(
+                Response::HTTP_BAD_REQUEST,
+                'Expected a JSON body like {"url": "https://...", "action": "update"}.',
+            );
         }
 
         $rawAction = $data['action'] ?? Action::Update->value;
@@ -97,7 +101,9 @@ final class Webhook
         }
 
         $url = $data['url'];
-        if (!in_array(parse_url($url, PHP_URL_SCHEME), ['http', 'https'], true) || !parse_url($url, PHP_URL_HOST)) {
+        // Schemes are case-insensitive, like hosts.
+        $scheme = strtolower((string) parse_url($url, PHP_URL_SCHEME));
+        if (!in_array($scheme, ['http', 'https'], true) || !parse_url($url, PHP_URL_HOST)) {
             return $this->error(Response::HTTP_BAD_REQUEST, 'url must be an absolute http(s) URL.');
         }
         // The fragment isn't part of the page.
@@ -108,7 +114,7 @@ final class Webhook
         }
 
         $this->queue->add(QueueRequest::now($url, $action));
-        Log::info("Queued {$action->value}: $url");
+        $this->logger->info('Queued {action}: {url}', ['action' => $action->value, 'url' => $url]);
 
         return $this->json(['queued' => ['url' => $url, 'action' => $action->value]], Response::HTTP_ACCEPTED);
     }

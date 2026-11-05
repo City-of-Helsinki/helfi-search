@@ -33,10 +33,14 @@ final class CrawlerConfig
     ];
 
     /**
-     * @param array<string, mixed> $config
+     * @param array<string, mixed> $config The whole file, with the overrides.
+     * @param non-empty-array<string, array<string, mixed>> $domains Each domain's settings, by site URL.
+     * @param array<string, mixed> $elasticsearch The connection, with the overrides.
      */
     private function __construct(
         private readonly array $config,
+        private readonly array $domains,
+        private readonly array $elasticsearch,
     ) {
     }
 
@@ -48,23 +52,41 @@ final class CrawlerConfig
         return dirname(__DIR__) . '/config/crawler.yml';
     }
 
+    /**
+     * @throws \RuntimeException If the file isn't a valid crawler config.
+     */
     public static function fromFile(string $path): self
     {
         $config = Yaml::parseFile($path);
-        if (!is_array($config) || empty($config['domains'])) {
+        if (!is_array($config) || !is_array($config['domains'] ?? null) || $config['domains'] === []) {
             throw new \RuntimeException("No domains configured in $path.");
         }
 
-        $elasticsearch = is_array($config['elasticsearch'] ?? null) ? $config['elasticsearch'] : [];
+        $domains = [];
+        foreach ($config['domains'] as $domain) {
+            $url = is_array($domain) ? ($domain['url'] ?? null) : null;
+            if (!is_string($url) || $url === '') {
+                throw new \RuntimeException("Every domain in $path needs a url.");
+            }
+            /** @var array<string, mixed> $domain YAML mappings have string keys. */
+            $domains[$url] = $domain;
+        }
+
+        $elasticsearch = $config['elasticsearch'] ?? [];
+        if (!is_array($elasticsearch)) {
+            throw new \RuntimeException("elasticsearch in $path must be a mapping.");
+        }
         foreach (self::ENVIRONMENT_OVERRIDES as $variable => $key) {
             $value = getenv($variable);
             if (is_string($value) && $value !== '') {
                 $elasticsearch[$key] = $key === 'port' ? (int) $value : $value;
             }
         }
+        /** @var array<string, mixed> $elasticsearch */
         $config['elasticsearch'] = $elasticsearch;
+        /** @var array<string, mixed> $config */
 
-        return new self($config);
+        return new self($config, $domains, $elasticsearch);
     }
 
     /**
@@ -84,7 +106,18 @@ final class CrawlerConfig
      */
     public function sites(): array
     {
-        return array_values(array_map(fn (array $domain): string => (string) $domain['url'], $this->config['domains']));
+        return array_keys($this->domains);
+    }
+
+    /**
+     * Each domain's settings (url, exclude_tags, extraction rules), by site
+     * URL.
+     *
+     * @return non-empty-array<string, array<string, mixed>>
+     */
+    public function domains(): array
+    {
+        return $this->domains;
     }
 
     /**
@@ -95,22 +128,27 @@ final class CrawlerConfig
     {
         $origin = Site::origin($url);
 
-        foreach ($this->config['domains'] as $domain) {
-            if (Site::origin((string) $domain['url']) === $origin) {
-                return (string) $domain['url'];
+        foreach (array_keys($this->domains) as $site) {
+            if (Site::origin($site) === $origin) {
+                return $site;
             }
         }
 
         return null;
     }
 
+    /**
+     * @throws \RuntimeException If the host or port is invalid.
+     */
     public function elasticsearchUrl(): string
     {
-        $es = $this->config['elasticsearch'];
-        $host = rtrim((string) ($es['host'] ?? 'http://localhost'), '/');
-        $port = (int) ($es['port'] ?? 9200);
+        $host = $this->elasticsearch['host'] ?? 'http://localhost';
+        $port = $this->elasticsearch['port'] ?? 9200;
+        if (!is_string($host) || !(is_int($port) || (is_string($port) && ctype_digit($port)))) {
+            throw new \RuntimeException('The Elasticsearch host or port is invalid.');
+        }
 
-        return "$host:$port";
+        return rtrim($host, '/') . ":$port";
     }
 
     /**
@@ -121,19 +159,38 @@ final class CrawlerConfig
      */
     public function elasticsearchCredentials(): array
     {
-        $es = $this->config['elasticsearch'];
-        if (!empty($es['api_key'])) {
-            return ['api_key' => (string) $es['api_key']];
+        $apiKey = $this->elasticsearchSetting('api_key');
+        if ($apiKey !== '') {
+            return ['api_key' => $apiKey];
         }
-        if (!empty($es['username'])) {
-            return ['username' => (string) $es['username'], 'password' => (string) ($es['password'] ?? '')];
+        $username = $this->elasticsearchSetting('username');
+        if ($username !== '') {
+            return ['username' => $username, 'password' => $this->elasticsearchSetting('password')];
         }
 
         return [];
     }
 
+    /**
+     * @throws \RuntimeException If output_index is missing.
+     */
     public function index(): string
     {
-        return (string) ($this->config['output_index'] ?? throw new \RuntimeException('output_index is not set.'));
+        $index = $this->config['output_index'] ?? null;
+        if (!is_string($index) || $index === '') {
+            throw new \RuntimeException('output_index is not set.');
+        }
+
+        return $index;
+    }
+
+    /**
+     * A setting from the elasticsearch section, or '' if it's not set.
+     */
+    private function elasticsearchSetting(string $key): string
+    {
+        $value = $this->elasticsearch[$key] ?? null;
+
+        return is_scalar($value) ? (string) $value : '';
     }
 }

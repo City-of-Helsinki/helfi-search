@@ -1,0 +1,103 @@
+on:
+  pull_request:
+  push:
+    branches: [main]
+  workflow_dispatch:
+name: Tests
+permissions:
+  contents: read
+concurrency:
+  group: ${{ github.workflow }}-${{ github.ref }}
+  cancel-in-progress: true
+jobs:
+  tests:
+    runs-on: ubuntu-latest
+    env:
+      # compose.ci.yaml runs the services as the runner's user.
+      COMPOSE_FILE: compose.yaml:compose.ci.yaml
+    steps:
+      - uses: actions/checkout@de0fac2e4500dabe0009e67214ff5f5447ce83dd # v6.0.2
+        with:
+          repository: druidfi/stonehenge
+
+      - name: Install and start Stonehenge
+        run: make up
+
+      - uses: actions/checkout@de0fac2e4500dabe0009e67214ff5f5447ce83dd # v6.0.2
+
+      - name: Create .env
+        run: printf 'WEBHOOK_TOKEN=%s\n' "$(openssl rand -hex 24)" > .env
+
+      - name: Build images
+        run: docker compose build --pull
+
+      # Before starting the webhook: it only becomes healthy with vendor/.
+      - name: Install dependencies
+        run: docker compose run --rm --no-deps --entrypoint composer webhook install --no-interaction
+
+      - name: Start compose project
+        run: docker compose up -d --wait crawler-elastic webhook
+
+      - name: Scan security updates
+        run: docker compose exec webhook composer audit
+
+      - name: Run PHPCS
+        run: docker compose exec webhook vendor/bin/phpcs
+
+      - name: Run PHPStan
+        run: docker compose exec webhook vendor/bin/phpstan analyse --no-progress
+
+      # With coverage: PCOV is installed in the local webhook image, off by
+      # default.
+      - name: Run PHPUnit tests
+        run: |
+          mkdir -p results
+          docker compose exec webhook php -d pcov.enabled=1 vendor/bin/phpunit --colors=never \
+            --log-junit /app/results/junit.xml \
+            --coverage-clover /app/results/coverage.xml \
+            --coverage-text=/app/results/coverage.txt
+
+      - name: Report coverage
+        run: |
+          {
+            echo '## Code coverage'
+            echo '```'
+            cat results/coverage.txt
+            echo '```'
+          } >> "$GITHUB_STEP_SUMMARY"
+
+      # The real crawler and Elasticsearch against a fake site served by the
+      # test; only the worker container has the crawler.
+      - name: Run integration tests
+        run: docker compose run --rm worker vendor/bin/phpunit --colors=never --testsuite integration --log-junit /app/results/integration.xml
+
+      # Through Stonehenge, as in local development: the webhook queues a
+      # change, and one worker run applies it. A delete, so the test doesn't
+      # depend on crawling the real sites.
+      - name: Smoke test
+        run: |
+          set -o pipefail
+          source .env
+          URL=https://webhook-helfi-search.docker.so
+          curl --fail --silent --show-error --insecure "$URL/health"
+          curl --fail --silent --show-error --insecure -H "Authorization: Bearer $WEBHOOK_TOKEN" \
+            -X POST "$URL/webhook" -d '{"url":"https://nuorten.hel.fi/","action":"delete"}'
+          docker compose run --rm worker php /app/bin/worker 2>&1 | tee results/worker.log
+          grep -q 'Batch .* done.' results/worker.log
+          curl --fail --silent --show-error --insecure -H "Authorization: Bearer $WEBHOOK_TOKEN" \
+            "$URL/status" | grep -q '"pending":0'
+
+      - name: Export logs
+        if: always()
+        run: |
+          mkdir -p results
+          docker compose logs webhook > results/webhook.log
+          docker compose logs crawler-elastic > results/elastic.log
+
+      - name: Create an artifact from test report
+        uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7.0.1
+        if: always()
+        with:
+          name: results
+          path: results/
+          retention-days: 1

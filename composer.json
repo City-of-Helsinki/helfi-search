@@ -6,10 +6,17 @@
     "require": {
         "php": "^8.4",
         "guzzlehttp/guzzle": "^7.10",
+        "psr/log": "^3.0",
         "symfony/filesystem": "^7.3",
         "symfony/http-foundation": "^7.3",
         "symfony/process": "^7.3",
         "symfony/yaml": "^7.3"
+    },
+    "require-dev": {
+        "phpstan/phpstan": "^2.3",
+        "phpstan/phpstan-phpunit": "^2.1",
+        "phpunit/phpunit": "^12.5",
+        "squizlabs/php_codesniffer": "^4.0"
     },
     "suggest": {
         "ext-pcntl": "The worker uses it to stop cleanly on SIGTERM; the worker image installs it."
@@ -17,6 +24,11 @@
     "autoload": {
         "psr-4": {
             "App\\": "src/"
+        }
+    },
+    "autoload-dev": {
+        "psr-4": {
+            "App\\Tests\\": "tests/"
         }
     },
     "config": {

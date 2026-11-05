@@ -13,9 +13,9 @@
 declare(strict_types=1);
 
 use App\CrawlerConfig;
-use App\Log;
 use App\Queue\QueueFolder;
 use App\Queue\QueueWriter;
+use App\StderrLogger;
 use App\Webhook\Webhook;
 use Symfony\Component\HttpFoundation\JsonResponse;
 use Symfony\Component\HttpFoundation\Request;
@@ -26,18 +26,21 @@ require dirname(__DIR__) . '/vendor/autoload.php';
 // sets umask 0002 for the whole server; PHP's umask() isn't safe to call here,
 // because FrankenPHP runs requests in threads of one process.
 
+$logger = new StderrLogger();
+
 try {
     // Read on every request, so edits to crawler.yml apply without a restart.
     $sites = CrawlerConfig::fromFile(CrawlerConfig::path())->sites();
 } catch (\Throwable $e) {
     // Without the site list nothing can be accepted, and /health must fail.
-    Log::error("Cannot read the crawler configuration: {$e->getMessage()}");
+    $logger->error('Cannot read the crawler configuration: {error}', ['error' => $e->getMessage(), 'exception' => $e]);
     (new JsonResponse(['error' => 'The crawler configuration is not readable.'], 503))->send();
     return;
 }
 
 $webhook = new Webhook(
     new QueueWriter(QueueFolder::default()),
+    $logger,
     (string) getenv('WEBHOOK_TOKEN'),
     $sites,
 );
@@ -45,7 +48,7 @@ $webhook = new Webhook(
 try {
     $response = $webhook->handle(Request::createFromGlobals());
 } catch (\Throwable $e) {
-    Log::error($e->getMessage());
+    $logger->error('{error}', ['error' => $e->getMessage(), 'exception' => $e]);
     $response = new JsonResponse(['error' => 'Could not queue the change.'], 500);
 }
 $response->send();

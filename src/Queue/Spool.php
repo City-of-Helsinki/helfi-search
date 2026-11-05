@@ -4,7 +4,7 @@ declare(strict_types=1);
 
 namespace App\Queue;
 
-use App\Log;
+use Psr\Log\LoggerInterface;
 
 /**
  * Takes requests from the queue folder in batches. Used by the worker.
@@ -19,6 +19,7 @@ final class Spool
 
     public function __construct(
         private readonly QueueFolder $folder,
+        private readonly LoggerInterface $logger,
     ) {
         foreach ([$folder->incoming, $folder->processing, $folder->failed] as $path) {
             if (!is_dir($path) && !@mkdir($path, 0775, true) && !is_dir($path)) {
@@ -59,7 +60,10 @@ final class Spool
             }
             // The filesystem doesn't support locking. Refusing to run would
             // stop all processing without anyone noticing, so carry on.
-            Log::warning("Cannot lock $lockFile: the queue filesystem doesn't support locks. Make sure runs never overlap.");
+            $this->logger->warning(
+                "Cannot lock {file}: the queue filesystem doesn't support locks. Make sure runs never overlap.",
+                ['file' => $lockFile],
+            );
         }
 
         $this->lock = $handle;
@@ -98,7 +102,7 @@ final class Spool
 
             $request = Request::fromJson((string) file_get_contents($target));
             if ($request === null) {
-                Log::warning("Moved unreadable request $name to failed/.");
+                $this->logger->warning('Moved unreadable request {name} to failed/.', ['name' => $name]);
                 rename($target, $this->folder->failed . "/$name");
                 continue;
             }

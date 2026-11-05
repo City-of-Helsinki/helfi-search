@@ -25,7 +25,7 @@
 declare(strict_types=1);
 
 use App\CrawlerConfig;
-use App\Log;
+use App\StderrLogger;
 use App\Worker\Crawler;
 use App\Worker\Elasticsearch;
 
@@ -38,6 +38,8 @@ if ($limit < 0) {
     exit(2);
 }
 
+$logger = new StderrLogger();
+
 try {
     $config = CrawlerConfig::fromFile(CrawlerConfig::path());
     Elasticsearch::fromConfig($config)->waitUntilReady();
@@ -46,13 +48,13 @@ try {
     $settings = $config->toArray();
 
     if ($limit === 0) {
-        Log::info('Crawling all sites.');
+        $logger->info('Crawling all sites.');
         $crawler->crawl($settings);
         exit(0);
     }
 
-    foreach ($settings['domains'] as $domain) {
-        Log::info("Crawling at most $limit URLs of {$domain['url']}.");
+    foreach ($config->domains() as $domain) {
+        $logger->info('Crawling at most {limit} URLs of {site}.', ['limit' => $limit, 'site' => $domain['url']]);
         $crawler->crawl([
             'domains' => [$domain],
             'max_unique_url_count' => $limit,
@@ -60,6 +62,6 @@ try {
         ] + $settings);
     }
 } catch (\Throwable $e) {
-    Log::error($e->getMessage());
+    $logger->error('{error}', ['error' => $e->getMessage(), 'exception' => $e]);
     exit(1);
 }
