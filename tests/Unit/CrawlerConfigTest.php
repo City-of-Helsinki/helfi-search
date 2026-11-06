@@ -63,7 +63,7 @@ final class CrawlerConfigTest extends TestCase
 
     public function testProjectConfigIsValid(): void
     {
-        $config = CrawlerConfig::fromFile(CrawlerConfig::path());
+        $config = CrawlerConfig::fromFile(dirname(__DIR__, 2) . '/config/crawler.yml');
 
         $this->assertNotEmpty($config->sites());
         $this->assertSame('hel-fi', $config->index());

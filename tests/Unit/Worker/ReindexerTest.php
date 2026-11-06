@@ -5,6 +5,7 @@ declare(strict_types=1);
 namespace App\Tests\Unit\Worker;
 
 use App\CrawlerConfig;
+use App\CrawlerConfigLoader;
 use App\Queue\Action;
 use App\Queue\QueueFolder;
 use App\Queue\QueueWriter;
@@ -25,6 +26,7 @@ use PHPUnit\Framework\TestCase;
 #[UsesClass(Crawler::class)]
 #[UsesClass(FailedDocumentCounter::class)]
 #[UsesClass(CrawlerConfig::class)]
+#[UsesClass(CrawlerConfigLoader::class)]
 #[UsesClass(Elasticsearch::class)]
 #[UsesClass(QueueFolder::class)]
 #[UsesClass(QueueWriter::class)]
@@ -78,7 +80,7 @@ final class ReindexerTest extends TestCase
         });
         $spool = new Spool($this->folder, $this->logger);
 
-        return (new Reindexer($spool, $this->configFile, $this->logger, $crawler))->run();
+        return (new Reindexer($spool, new CrawlerConfigLoader($this->configFile), $this->logger, $crawler))->run();
     }
 
     /**

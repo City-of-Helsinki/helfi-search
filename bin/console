@@ -1,0 +1,20 @@
+#!/usr/bin/env php
+<?php
+
+/**
+ * The worker's commands: app:worker (apply the queued changes) and app:crawl
+ * (full crawl). Run "bin/console list app" for the list.
+ */
+
+declare(strict_types=1);
+
+use App\Kernel;
+use Symfony\Bundle\FrameworkBundle\Console\Application;
+
+// The webhook runs as a different UID and shares only the group, so whatever
+// we create in the queue folder must be group-writable.
+umask(0002);
+
+require_once dirname(__DIR__) . '/vendor/autoload_runtime.php';
+
+return static fn (array $context): Application => new Application(Kernel::fromContext($context));

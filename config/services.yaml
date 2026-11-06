@@ -1,0 +1,45 @@
+parameters:
+    # Read on every request and every worker run, so edits apply without a
+    # restart. See src/CrawlerConfig.php.
+    app.crawler_config: '%kernel.project_dir%/config/crawler.yml'
+    # The queue folder shared by the webhook and the worker: the shared volume
+    # is mounted here on OpenShift. See src/Queue/QueueFolder.php.
+    app.queue_dir: '%kernel.project_dir%/var/queue'
+    # The webhook's shared secret. Every request but /health is refused if it's
+    # empty.
+    env(WEBHOOK_TOKEN): ''
+    env(APP_SECRET): ''
+
+services:
+    _defaults:
+        autowire: true
+        autoconfigure: true
+
+    App\:
+        resource: '../src/'
+        exclude:
+            - '../src/Kernel.php'
+            # Values, not services.
+            - '../src/CrawlerConfig.php'
+            - '../src/Site.php'
+            - '../src/Queue/Action.php'
+            - '../src/Queue/Request.php'
+            # Created per run, from the crawler config.
+            - '../src/Worker/Elasticsearch.php'
+            - '../src/Worker/FailedDocumentCounter.php'
+
+    App\CrawlerConfigLoader:
+        arguments: ['%app.crawler_config%']
+
+    App\Queue\QueueFolder:
+        arguments: ['%app.queue_dir%']
+
+    App\Webhook\TokenListener:
+        arguments:
+            $token: '%env(WEBHOOK_TOKEN)%'
+
+when@test:
+    parameters:
+        # Tests point these at temporary files: see tests/KernelEnvironmentTrait.php.
+        app.crawler_config: '%env(TEST_CRAWLER_CONFIG)%'
+        app.queue_dir: '%env(TEST_QUEUE_DIR)%'

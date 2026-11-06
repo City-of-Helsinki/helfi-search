@@ -33,7 +33,7 @@ final class QueueTest extends TestCase
 
     protected function setUp(): void
     {
-        // As in the images: the webhook's base image and bin/worker set it.
+        // As in the images: the webhook's base image and bin/console set it.
         $this->umask = umask(0002);
         $this->folder = new QueueFolder($this->temporaryDirectory() . '/var/queue');
         $this->writer = new QueueWriter($this->folder);

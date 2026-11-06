@@ -8,6 +8,6 @@ parameters:
         - src
         - tests
         - public
-        - bin/crawl
-        - bin/worker
+        - bin/console
+        - config/bundles.php
     tmpDir: var/phpstan

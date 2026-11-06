@@ -21,11 +21,6 @@ final class QueueFolderTest extends TestCase
         $this->assertSame('/data/queue/worker.lock', $folder->lockFile);
     }
 
-    public function testDefaultIsInTheProject(): void
-    {
-        $this->assertSame(dirname(__DIR__, 3) . '/var/queue/incoming', QueueFolder::default()->incoming);
-    }
-
     public function testFileNamesSortInArrivalOrder(): void
     {
         $names = [];

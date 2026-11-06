@@ -1,0 +1,3 @@
+webhook:
+    resource: ../src/Webhook/
+    type: attribute

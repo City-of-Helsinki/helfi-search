@@ -1,0 +1,19 @@
+framework:
+    # Not used: nothing is signed or encrypted. Set it if that changes.
+    secret: '%env(APP_SECRET)%'
+    # No sessions, forms or CSRF: the webhook's only client authentication is
+    # its token.
+    http_method_override: false
+    handle_all_throwables: true
+    php_errors:
+        log: true
+    exceptions:
+        # Wrong URLs and methods are the client's problem, not ours.
+        Symfony\Component\HttpKernel\Exception\NotFoundHttpException:
+            log_level: info
+        Symfony\Component\HttpKernel\Exception\MethodNotAllowedHttpException:
+            log_level: info
+
+when@test:
+    framework:
+        test: true

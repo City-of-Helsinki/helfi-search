@@ -8,7 +8,7 @@ within about 30 minutes.
 ```
 hel.fi site ──POST /webhook──▶ webhook ──▶ queue folder ──▶ worker ──▶ Elasticsearch
                                                               ▲
-                               full crawl (bin/crawl) ────────┘
+                               full crawl (app:crawl) ────────┘
 ```
 
 - **webhook** ([FrankenPHP](https://frankenphp.dev)): accepts change
@@ -18,7 +18,11 @@ hel.fi site ──POST /webhook──▶ webhook ──▶ queue folder ──�
   removed ones.
 - **full crawl**: crawls every site and removes pages that no longer exist.
 
-The webhook and the worker share only the queue folder (`var/queue`).
+The webhook and the worker share only the queue folder (`var/queue`). Both are
+one [Symfony](https://symfony.com) application: the webhook is
+`public/index.php`, the worker and the full crawl are the `app:worker` and
+`app:crawl` commands (`bin/console`). Services are configured in
+[`config/services.yaml`](config/services.yaml).
 
 ## Local development
 
@@ -30,8 +34,9 @@ make setup
 
 This creates `.env` (the webhook token, and your UID: the services run as
 your user, so the files they create belong to you), builds the images,
-installs the dependencies, and starts Elasticsearch, the webhook and the worker, with a
-full crawl limited to about 50 pages per site.
+installs the dependencies, and starts Elasticsearch, the webhook and the
+worker, with a full crawl limited to about 50 pages per site. The services run
+in Symfony's `dev` environment.
 
 - Webhook: https://webhook-helfi-search.docker.so
 - Elasticsearch has no public URL: `make search` shows the indexed documents.
@@ -46,6 +51,7 @@ make crawl              # Full crawl, about 50 pages per site (LIMIT=10 to chang
 make crawl-all          # Full crawl of every page
 make process-queue      # Apply the queued changes now
 make composer ARGS="require vendor/package"
+make console ARGS="debug:router"
 ```
 
 ## Tests
@@ -74,6 +80,7 @@ ingest pipeline, which removes fields that shouldn't be indexed.
 | Variable | Used by | Description |
 |---|---|---|
 | `WEBHOOK_TOKEN` | webhook | Shared secret for the API. Required. |
+| `APP_ENV` | all | Symfony environment: `prod` in the images, `dev` locally. |
 | `ELASTICSEARCH_HOST`, `ELASTICSEARCH_PORT` | worker, crawl | Override the connection in `crawler.yml`. |
 | `ELASTICSEARCH_API_KEY` or `ELASTICSEARCH_USERNAME` and `ELASTICSEARCH_PASSWORD` | worker, crawl | Credentials. Never put them in `crawler.yml`. |
 | `CRAWL_LIMIT_PER_DOMAIN` | local crawl | Pages per site (default 50, `0` for all). |
@@ -120,8 +127,8 @@ make build-openshift                      # DOCKER_BUILD_TAG=dev for the dev bas
 |---|---|
 | Webhook Deployment | Port 8080, probes on `GET /health`, a Route in front. `WEBHOOK_TOKEN` from a Secret. |
 | Worker CronJob | `*/30 * * * *`, `concurrencyPolicy: Forbid`. `ELASTICSEARCH_*` variables, credentials from a Secret. |
-| Full crawl CronJob | The worker image with `php /app/bin/crawl`, e.g. nightly. Same variables. |
-| Queue volume | `ReadWriteMany` (e.g. `azure-file`), mounted at `/app/var` in the webhook and the worker. Writable by group 0. |
+| Full crawl CronJob | The worker image with `php /app/bin/console app:crawl`, e.g. nightly. Same variables. |
+| Queue volume | `ReadWriteMany` (e.g. `azure-file`), mounted at `/app/var/queue` in the webhook and the worker. Writable by group 0. Not at `/app/var`: Symfony's cache (`/app/var/cache`) is built into the images. |
 | Elasticsearch | External. Create the `hel-fi` pipeline from `config/pipeline.json` once. |
 
 Both images run as any non-root user, as OpenShift requires.

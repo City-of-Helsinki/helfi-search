@@ -5,20 +5,19 @@ declare(strict_types=1);
 namespace App\Tests\Integration;
 
 use App\CrawlerConfig;
+use App\CrawlerConfigLoader;
 use App\Queue\QueueFolder;
-use App\Queue\QueueWriter;
 use App\Queue\Spool;
+use App\Tests\KernelEnvironmentTrait;
 use App\Tests\Unit\CollectingLogger;
-use App\Webhook\Webhook;
 use App\Worker\Crawler;
 use App\Worker\Reindexer;
 use GuzzleHttp\Client;
 use GuzzleHttp\RequestOptions;
 use PHPUnit\Framework\Attributes\CoversNothing;
 use PHPUnit\Framework\Attributes\Depends;
-use PHPUnit\Framework\TestCase;
+use Symfony\Bundle\FrameworkBundle\Test\WebTestCase;
 use Symfony\Component\Filesystem\Filesystem;
-use Symfony\Component\HttpFoundation\Request;
 use Symfony\Component\Yaml\Yaml;
 
 /**
@@ -34,8 +33,10 @@ use Symfony\Component\Yaml\Yaml;
  * site and the index replaced: a throwaway index, deleted afterwards.
  */
 #[CoversNothing]
-final class IndexingTest extends TestCase
+final class IndexingTest extends WebTestCase
 {
+    use KernelEnvironmentTrait;
+
     private const string TOKEN = 'integration-test';
 
     private static TestSite $site;
@@ -56,7 +57,7 @@ final class IndexingTest extends TestCase
         mkdir(self::$temporary, 0775, true);
 
         // The project's settings, for a fake site and a throwaway index.
-        $project = CrawlerConfig::fromFile(CrawlerConfig::path());
+        $project = CrawlerConfig::fromFile(dirname(__DIR__, 2) . '/config/crawler.yml');
         $config = $project->toArray();
         $domain = array_values($project->domains())[0];
         $domain['url'] = self::$site->url;
@@ -132,19 +133,26 @@ final class IndexingTest extends TestCase
      */
     private function queueAndProcess(array $changes): void
     {
-        $logger = new CollectingLogger();
-        $folder = new QueueFolder(self::$temporary . '/queue');
-        $webhook = new Webhook(new QueueWriter($folder), $logger, self::TOKEN, [self::$site->url]);
+        $queueDir = self::$temporary . '/queue';
+        self::configureKernel($queueDir, self::$configFile, self::TOKEN);
+        $client = self::createClient();
         foreach ($changes as $path => $action) {
             $body = json_encode(['url' => self::$site->pageUrl($path), 'action' => $action], JSON_THROW_ON_ERROR);
-            $response = $webhook->handle(Request::create('/webhook', 'POST', server: [
+            $client->request('POST', '/webhook', server: [
                 'HTTP_AUTHORIZATION' => 'Bearer ' . self::TOKEN,
-            ], content: $body));
+            ], content: $body);
+            $response = $client->getResponse();
             $this->assertSame(202, $response->getStatusCode(), (string) $response->getContent());
             usleep(10);
         }
 
-        $reindexer = new Reindexer(new Spool($folder, $logger), self::$configFile, $logger, $this->crawler());
+        $logger = new CollectingLogger();
+        $reindexer = new Reindexer(
+            new Spool(new QueueFolder($queueDir), $logger),
+            new CrawlerConfigLoader(self::$configFile),
+            $logger,
+            $this->crawler(),
+        );
         $this->assertTrue(
             $reindexer->run(),
             implode("\n", $logger->messages('error')) . "\n" . self::$crawlerOutput,

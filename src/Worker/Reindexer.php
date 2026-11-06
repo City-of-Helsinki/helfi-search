@@ -5,6 +5,7 @@ declare(strict_types=1);
 namespace App\Worker;
 
 use App\CrawlerConfig;
+use App\CrawlerConfigLoader;
 use App\Queue\Action;
 use App\Queue\Spool;
 use Psr\Log\LoggerInterface;
@@ -15,13 +16,13 @@ use Psr\Log\LoggerInterface;
 final class Reindexer
 {
     /**
-     * @param string $crawlerConfigPath crawler.yml, the full-crawl config.
+     * @param CrawlerConfigLoader $config crawler.yml, the full-crawl config.
      */
     public function __construct(
         private readonly Spool $queue,
-        private readonly string $crawlerConfigPath,
+        private readonly CrawlerConfigLoader $config,
         private readonly LoggerInterface $logger,
-        private readonly Crawler $crawler = new Crawler(),
+        private readonly Crawler $crawler,
     ) {
     }
 
@@ -49,7 +50,7 @@ final class Reindexer
 
         try {
             // Read the config on every run so edits apply without a restart.
-            $config = CrawlerConfig::fromFile($this->crawlerConfigPath);
+            $config = $this->config->load();
 
             if ($deletes) {
                 $es = Elasticsearch::fromConfig($config);

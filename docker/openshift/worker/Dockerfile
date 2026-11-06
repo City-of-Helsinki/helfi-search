@@ -1,5 +1,5 @@
-# The worker's OpenShift image: applies the queued changes (bin/worker, the
-# default command) and runs full crawls (bin/crawl). Build from the repository
+# The worker's OpenShift image: applies the queued changes (app:worker, the
+# default command) and runs full crawls (app:crawl). Build from the repository
 # root:
 #
 #   docker build -f docker/openshift/worker/Dockerfile .
@@ -21,12 +21,18 @@ RUN composer dump-autoload --no-dev --classmap-authoritative
 
 FROM ghcr.io/city-of-helsinki/helfi-search-elasticsearch-crawler:${DOCKER_BUILD_TAG:-latest}
 
+ENV APP_ENV=prod
+
 USER root
 COPY --from=vendor /app /app
 COPY bin /app/bin
 COPY config /app/config
-# var/ holds the queue folder, as in the webhook image.
-RUN mkdir -p /app/var && chgrp 0 /app/var && chmod 2775 /app/var
+# Symfony's cache and the queue folder, as in the webhook image.
+RUN php /app/bin/console cache:warmup \
+    && mkdir -p /app/var/queue \
+    && chgrp -R 0 /app/var \
+    && chmod -R g=u /app/var/cache \
+    && chmod 2775 /app/var/queue
 USER java
 
-CMD ["php", "/app/bin/worker"]
+CMD ["php", "/app/bin/console", "app:worker"]

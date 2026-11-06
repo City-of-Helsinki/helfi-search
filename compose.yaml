@@ -65,12 +65,13 @@ services:
   # vendor/ into the project folder. The production images are built with
   # docker/openshift/*/Dockerfile.
   #
-  # The queue folder is var/queue in the project folder (ignored by git).
+  # The queue folder is var/queue in the project folder (ignored by git), next
+  # to Symfony's cache (var/cache).
 
   # Full crawl. Locally limited to about CRAWL_LIMIT_PER_DOMAIN URLs per site
   # (default 50) to keep development fast; set it to 0 for a complete crawl.
   # Limited crawls skip the purge step, so documents from earlier crawls stay.
-  # See bin/crawl.
+  # See bin/console app:crawl --help.
   crawler:
     build:
       context: .
@@ -81,7 +82,9 @@ services:
     # Like OpenShift's restricted SCC: no capabilities, no privilege escalation.
     cap_drop: [ALL]
     security_opt: ["no-new-privileges:true"]
-    command: ["php", "/app/bin/crawl", "--limit-per-domain=${CRAWL_LIMIT_PER_DOMAIN:-50}"]
+    environment:
+      APP_ENV: dev
+    command: ["php", "/app/bin/console", "app:crawl", "--limit-per-domain=${CRAWL_LIMIT_PER_DOMAIN:-50}"]
     volumes:
       - .:/app:delegated
     networks:
@@ -95,8 +98,8 @@ services:
   # Receives content update notifications and writes them into the queue
   # folder. It never talks to the crawler or Elasticsearch: the queue folder is
   # the only thing it shares with the worker at runtime (the file format is in
-  # src/Queue/QueueFolder.php). It reads config/crawler.yml only for the list of sites
-  # to accept.
+  # src/Queue/QueueFolder.php). It reads config/crawler.yml only for the list of
+  # sites to accept.
   webhook:
     build:
       context: .
@@ -107,6 +110,7 @@ services:
     cap_drop: [ALL]
     security_opt: ["no-new-privileges:true"]
     environment:
+      APP_ENV: dev
       WEBHOOK_TOKEN: ${WEBHOOK_TOKEN:-}
     volumes:
       - .:/app:delegated
@@ -134,7 +138,9 @@ services:
     user: "${LOCAL_UID:-1000}:0"
     cap_drop: [ALL]
     security_opt: ["no-new-privileges:true"]
-    command: ["php", "/app/bin/worker", "--every=1800"]
+    environment:
+      APP_ENV: dev
+    command: ["php", "/app/bin/console", "app:worker", "--every=1800"]
     volumes:
       - .:/app:delegated
     networks:

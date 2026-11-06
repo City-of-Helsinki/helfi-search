@@ -20,12 +20,20 @@ RUN composer dump-autoload --no-dev --classmap-authoritative
 
 FROM ghcr.io/city-of-helsinki/helfi-search-webhook:${DOCKER_BUILD_TAG:-latest}
 
+ENV APP_ENV=prod
+
 USER root
 COPY --from=vendor /app /app
 COPY public /app/public
+COPY bin /app/bin
 COPY config /app/config
-# var/ holds the queue folder; OpenShift mounts the shared volume here. For
-# when no volume is mounted: writable by group 0, new entries inherit the
-# group.
-RUN mkdir -p /app/var && chgrp 0 /app/var && chmod 2775 /app/var
+# Symfony's cache (var/cache) is built here, so it ships with the image;
+# group 0 may update it. var/queue is the queue folder, where OpenShift mounts
+# the shared volume. For when no volume is mounted: writable by group 0, new
+# entries inherit the group.
+RUN php /app/bin/console cache:warmup \
+    && mkdir -p /app/var/queue \
+    && chgrp -R 0 /app/var \
+    && chmod -R g=u /app/var/cache \
+    && chmod 2775 /app/var/queue
 USER 1001

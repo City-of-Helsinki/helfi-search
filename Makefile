@@ -1,7 +1,7 @@
 COMPOSE ?= docker compose
 # Pages per site in a local full crawl; 0 crawls everything.
 LIMIT ?= 50
-# Arguments for `make composer`, e.g. ARGS="require vendor/package".
+# Arguments for `make composer` and `make console`, e.g. ARGS="require vendor/package".
 ARGS ?=
 # The base images' tag for `make build-openshift`.
 DOCKER_BUILD_TAG ?= latest
@@ -59,11 +59,15 @@ crawl-all: ## Full crawl of every page
 PHONY += process-queue
 process-queue: ## Process the queue now instead of waiting for the worker
 	$(COMPOSE) stop worker
-	$(COMPOSE) run --rm worker php /app/bin/worker; status=$$?; $(COMPOSE) start worker; exit $$status
+	$(COMPOSE) run --rm worker php /app/bin/console app:worker; status=$$?; $(COMPOSE) start worker; exit $$status
 
 PHONY += search
 search: ## Show the indexed documents
 	$(COMPOSE) exec crawler-elastic curl -s "localhost:9200/hel-fi/_search?pretty"
+
+PHONY += console
+console: ## Run a Symfony console command, e.g. make console ARGS="debug:router"
+	$(COMPOSE) run --rm --no-deps worker php /app/bin/console $(ARGS)
 
 PHONY += composer
 composer: ## Run Composer, e.g. make composer ARGS="require vendor/package"

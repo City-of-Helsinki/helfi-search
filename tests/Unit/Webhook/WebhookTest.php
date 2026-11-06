@@ -4,49 +4,62 @@ declare(strict_types=1);
 
 namespace App\Tests\Unit\Webhook;
 
+use App\CrawlerConfig;
+use App\CrawlerConfigLoader;
+use App\Kernel;
 use App\Queue\Action;
 use App\Queue\QueueFolder;
 use App\Queue\QueueWriter;
 use App\Queue\Request as QueueRequest;
 use App\Site;
-use App\Tests\Unit\CollectingLogger;
+use App\Tests\KernelEnvironmentTrait;
 use App\Tests\Unit\TemporaryDirectoryTrait;
-use App\Webhook\Webhook;
+use App\Webhook\Json;
+use App\Webhook\JsonErrorListener;
+use App\Webhook\TokenListener;
+use App\Webhook\WebhookController;
 use PHPUnit\Framework\Attributes\CoversClass;
 use PHPUnit\Framework\Attributes\DataProvider;
 use PHPUnit\Framework\Attributes\UsesClass;
-use PHPUnit\Framework\TestCase;
-use Symfony\Component\HttpFoundation\Request;
+use Symfony\Bundle\FrameworkBundle\Test\WebTestCase;
 use Symfony\Component\HttpFoundation\Response;
 
-#[CoversClass(Webhook::class)]
+/**
+ * The webhook through the whole kernel: routing, the token, JSON errors.
+ */
+#[CoversClass(WebhookController::class)]
+#[CoversClass(TokenListener::class)]
+#[CoversClass(JsonErrorListener::class)]
+#[CoversClass(Json::class)]
+#[UsesClass(Kernel::class)]
+#[UsesClass(CrawlerConfig::class)]
+#[UsesClass(CrawlerConfigLoader::class)]
 #[UsesClass(QueueWriter::class)]
 #[UsesClass(QueueFolder::class)]
 #[UsesClass(QueueRequest::class)]
 #[UsesClass(Site::class)]
-final class WebhookTest extends TestCase
+final class WebhookTest extends WebTestCase
 {
     use TemporaryDirectoryTrait;
+    use KernelEnvironmentTrait;
 
     private const string TOKEN = 'test-token';
 
+    private const string CONFIG = <<<'YAML'
+        domains:
+          - url: https://nuorten.hel.fi
+          - url: https://avustukset.hel.fi
+        output_index: hel-fi
+        YAML;
+
     private QueueFolder $folder;
-    private CollectingLogger $logger;
+    private string $configFile;
 
     protected function setUp(): void
     {
         $this->folder = new QueueFolder($this->temporaryDirectory() . '/queue');
-        $this->logger = new CollectingLogger();
-    }
-
-    private function webhook(string $token = self::TOKEN): Webhook
-    {
-        return new Webhook(
-            new QueueWriter($this->folder),
-            $this->logger,
-            $token,
-            ['https://nuorten.hel.fi', 'https://avustukset.hel.fi'],
-        );
+        $this->configFile = $this->temporaryDirectory() . '/crawler.yml';
+        file_put_contents($this->configFile, self::CONFIG);
     }
 
     /**
@@ -60,11 +73,16 @@ final class WebhookTest extends TestCase
         ?string $token = self::TOKEN,
         string $configuredToken = self::TOKEN,
     ): array {
+        self::configureKernel($this->temporaryDirectory() . '/queue', $this->configFile, $configuredToken);
+        $client = self::createClient();
         $server = $token === null ? [] : ['HTTP_AUTHORIZATION' => "Bearer $token"];
-        $request = Request::create($path, $method, server: $server, content: $body);
-        $response = $this->webhook($configuredToken)->handle($request);
+        $client->request($method, $path, server: $server, content: $body);
+        $response = $client->getResponse();
 
         $this->assertSame('application/json', $response->headers->get('Content-Type'));
+        if ($method === 'HEAD') {
+            return [$response->getStatusCode(), []];
+        }
         $json = json_decode((string) $response->getContent(), true, flags: JSON_THROW_ON_ERROR);
         $this->assertIsArray($json);
         /** @var array<string, mixed> $json */
@@ -96,7 +114,7 @@ final class WebhookTest extends TestCase
         $this->assertCount(1, $queued);
         $this->assertSame('https://nuorten.hel.fi/opiskelu/', $queued[0]->url);
         $this->assertSame(Action::Update, $queued[0]->action);
-        $this->assertSame(['Queued update: https://nuorten.hel.fi/opiskelu/'], $this->logger->messages('info'));
+        $this->assertSame(['Queued update: https://nuorten.hel.fi/opiskelu/'], self::loggedMessages('info'));
     }
 
     public function testQueuesADelete(): void
@@ -129,7 +147,7 @@ final class WebhookTest extends TestCase
         $this->assertSame($expectedStatus, $status);
         $this->assertArrayHasKey('error', $response);
         $this->assertSame([], $this->queued());
-        $this->assertSame([], $this->logger->records);
+        $this->assertSame([], self::loggedMessages('info'));
     }
 
     /**
@@ -186,7 +204,7 @@ final class WebhookTest extends TestCase
     {
         $this->assertSame([200, ['status' => 'ok']], $this->send('GET', '/health', token: null), 'No token needed.');
         $this->assertSame(200, $this->send('HEAD', '/health', token: null)[0]);
-        $this->assertSame(405, $this->send('POST', '/health', token: null)[0]);
+        $this->assertSame([405, ['error' => 'Use GET.']], $this->send('POST', '/health', token: null));
     }
 
     public function testHealthFailsWhenTheQueueIsNotWritable(): void
@@ -196,22 +214,39 @@ final class WebhookTest extends TestCase
         $this->assertSame(503, $this->send('GET', '/health', token: null)[0]);
     }
 
-    #[DataProvider('wrongRouteData')]
-    public function testWrongRoutes(string $method, string $path, int $expectedStatus): void
+    public function testUnreadableCrawlerConfig(): void
     {
-        $this->assertSame($expectedStatus, $this->send($method, $path)[0]);
+        file_put_contents($this->configFile, "domains: []\n");
+
+        $this->assertSame(
+            [503, ['status' => 'crawler configuration not readable']],
+            $this->send('GET', '/health', token: null),
+        );
+        [$status, $body] = $this->send('POST', '/webhook', '{"url":"https://nuorten.hel.fi/"}');
+        $this->assertSame(503, $status);
+        $this->assertSame('The crawler configuration is not readable.', $body['error']);
+        $errors = self::loggedMessages('error');
+        $this->assertStringStartsWith('Cannot read the crawler configuration: ', $errors[0] ?? '');
+        $this->assertSame([], $this->queued());
+    }
+
+    #[DataProvider('wrongRouteData')]
+    public function testWrongRoutes(string $method, string $path, ?string $token, int $expectedStatus): void
+    {
+        $this->assertSame($expectedStatus, $this->send($method, $path, token: $token)[0]);
     }
 
     /**
-     * @return array<string, array{string, string, int}>
+     * @return array<string, array{string, string, string|null, int}>
      */
     public static function wrongRouteData(): array
     {
         return [
-            'GET /webhook' => ['GET', '/webhook', 405],
-            'POST /status' => ['POST', '/status', 405],
-            'unknown path' => ['GET', '/nope', 404],
-            'front controller' => ['GET', '/index.php', 404],
+            'GET /webhook' => ['GET', '/webhook', self::TOKEN, 405],
+            'POST /status' => ['POST', '/status', self::TOKEN, 405],
+            'unknown path' => ['GET', '/nope', self::TOKEN, 404],
+            'unknown path without a token' => ['GET', '/nope', null, 404],
+            'front controller' => ['GET', '/index.php', self::TOKEN, 404],
         ];
     }
 }

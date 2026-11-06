@@ -81,7 +81,7 @@ jobs:
           curl --fail --silent --show-error --insecure "$URL/health"
           curl --fail --silent --show-error --insecure -H "Authorization: Bearer $WEBHOOK_TOKEN" \
             -X POST "$URL/webhook" -d '{"url":"https://nuorten.hel.fi/","action":"delete"}'
-          docker compose run --rm worker php /app/bin/worker 2>&1 | tee results/worker.log
+          docker compose run --rm worker php /app/bin/console app:worker 2>&1 | tee results/worker.log
           grep -q 'Batch .* done.' results/worker.log
           curl --fail --silent --show-error --insecure -H "Authorization: Bearer $WEBHOOK_TOKEN" \
             "$URL/status" | grep -q '"pending":0'

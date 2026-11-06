@@ -1,0 +1,45 @@
+# Everything goes to stderr, i.e. the container log:
+#
+#   [2026-11-06T12:00:00+00:00] [INFO] Queued update: https://nuorten.hel.fi/
+#
+# The application's own messages (the "app" channel) from INFO up; Symfony's
+# (requests, PHP errors, commands) only from WARNING up.
+
+monolog:
+    channels:
+        - deprecation
+
+when@dev: &stderr
+    monolog:
+        handlers:
+            app:
+                type: stream
+                path: php://stderr
+                level: info
+                channels: [app]
+                formatter: app.log_formatter
+            symfony:
+                type: stream
+                path: php://stderr
+                level: warning
+                channels: ['!app', '!event', '!deprecation']
+                formatter: app.log_formatter
+
+when@prod: *stderr
+
+when@test:
+    monolog:
+        handlers:
+            # The tests read the records from monolog.handler.test.
+            test:
+                type: test
+                level: info
+                channels: [app]
+
+services:
+    app.log_formatter:
+        class: Monolog\Formatter\LineFormatter
+        arguments:
+            - "[%%datetime%%] [%%level_name%%] %%message%%\n"
+            # ISO 8601, without microseconds.
+            - 'c'

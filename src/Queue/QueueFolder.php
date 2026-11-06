@@ -19,15 +19,16 @@ namespace App\Queue;
  * Files are written under a temporary name that doesn't end in .json and
  * then renamed, so the worker never reads a partial file.
  *
- * The folder is var/queue in the project: /app/var/queue in the images, where
- * the shared volume is mounted at /app/var on OpenShift. Locally it's in the
- * mounted project folder (ignored by git).
+ * The folder is var/queue in the project (the app.queue_dir parameter):
+ * /app/var/queue in the images, where OpenShift mounts the shared volume. The
+ * rest of var/ is Symfony's cache, which stays in the image. Locally it's in
+ * the mounted project folder (ignored by git).
  *
  * The webhook and the worker may run as different UIDs (OpenShift assigns
  * random ones). They share the folder through its group: both create entries
  * group-writable (umask 0002, set by the webhook's base image and by
- * bin/worker), and the folder should be setgid (OpenShift's fsGroup does that
- * for volumes; the images do it for /app/var).
+ * bin/console), and the folder should be setgid (OpenShift's fsGroup does that
+ * for volumes; the images do it for /app/var/queue).
  */
 final readonly class QueueFolder
 {
@@ -46,14 +47,6 @@ final readonly class QueueFolder
         $this->processing = "$dir/processing";
         $this->failed = "$dir/failed";
         $this->lockFile = "$dir/worker.lock";
-    }
-
-    /**
-     * The project's queue folder, var/queue.
-     */
-    public static function default(): self
-    {
-        return new self(dirname(__DIR__, 2) . '/var/queue');
     }
 
     /**

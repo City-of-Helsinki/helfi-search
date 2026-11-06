@@ -7,8 +7,8 @@ namespace App;
 use Symfony\Component\Yaml\Yaml;
 
 /**
- * Read access to config/crawler.yml: the crawled sites, the index and the
- * Elasticsearch connection.
+ * Read access to config/crawler.yml (see CrawlerConfigLoader): the crawled
+ * sites, the index and the Elasticsearch connection.
  *
  * Shared by the webhook (which sites to accept) and the worker (how to crawl
  * them), so the list of sites lives in one place.
@@ -42,14 +42,6 @@ final class CrawlerConfig
         private readonly array $domains,
         private readonly array $elasticsearch,
     ) {
-    }
-
-    /**
-     * The project's crawler.yml: /app/config/crawler.yml in the images.
-     */
-    public static function path(): string
-    {
-        return dirname(__DIR__) . '/config/crawler.yml';
     }
 
     /**
