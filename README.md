@@ -1,9 +1,10 @@
 # Hel.fi search
 
-Indexes the content of hel.fi sites into Elasticsearch. Pages are indexed by
-crawling the sites with [Elastic Open Crawler](https://github.com/elastic/crawler),
-and sites send a webhook when content changes, so changed pages are reindexed
-within about 30 minutes.
+Indexes the content of hel.fi sites into Elasticsearch for semantic search.
+The sites are crawled with [Elastic Open Crawler](https://github.com/elastic/crawler),
+each page is split into chunks and embedded with OpenAI, and sites send a
+webhook when content changes, so changed pages are reindexed within about 30
+minutes.
 
 ```
 hel.fi site ──POST /webhook──▶ webhook ──▶ queue folder ──▶ worker ──▶ Elasticsearch
@@ -17,6 +18,25 @@ hel.fi site ──POST /webhook──▶ webhook ──▶ queue folder ──�
 - **worker**: every 30 minutes, recrawls the changed pages and deletes the
   removed ones.
 - **full crawl**: crawls every site and removes pages that no longer exist.
+
+Both crawl the same way and process the pages with the same code
+([`src/Indexer/`](src/Indexer/)):
+
+```
+crawler ──▶ hel-fi-pages ──▶ clean → Markdown → chunks ──▶ hel-fi
+            (page HTML)                  ▲         (one document per page,
+                                         │          with chunk vectors)
+                       hel-fi-embedding-cache
+                       (only new chunks are embedded)
+```
+
+| Index | Contents |
+|---|---|
+| `hel-fi-pages` | The crawler's output: each page's HTML. Read only by the worker. |
+| `hel-fi` | The search index (an alias of `hel-fi-v1`): URL, title (`label`), language, content type (`entity_bundle`, from `<meta name="helfi_content_type">`), Markdown, and the chunks' snippets, section anchors and vectors (`embeddings_text_embedding_3_large`). The field names are those of the `helfi_search` Drupal module. |
+| `hel-fi-embedding-cache` | A vector per chunk, by content hash. Unchanged pages aren't processed again, and a changed page re-embeds only its changed chunks. The full crawl prunes unused vectors. |
+
+The text processing (`src/Pipeline/`) is ported from `helfi_search`.
 
 The webhook and the worker share only the queue folder (`var/queue`). Both are
 one [Symfony](https://symfony.com) application: the webhook is
@@ -72,10 +92,13 @@ worker.
 
 ## Configuration
 
-[`config/crawler.yml`](config/crawler.yml) holds the crawled sites, what's
-extracted from each page, the index (`hel-fi`) and the local Elasticsearch
-connection. [`config/pipeline.json`](config/pipeline.json) is the `hel-fi`
-ingest pipeline, which removes fields that shouldn't be indexed.
+[`config/crawler.yml`](config/crawler.yml) holds the crawled sites, the
+crawler's index (`hel-fi-pages`) and the local Elasticsearch connection.
+[`config/services.yaml`](config/services.yaml) holds the other index names and
+the CSS classes of elements that aren't content.
+
+`bin/console app:setup` creates the indexes that are missing (`make up` runs it
+locally).
 
 | Variable | Used by | Description |
 |---|---|---|
@@ -83,6 +106,8 @@ ingest pipeline, which removes fields that shouldn't be indexed.
 | `APP_ENV` | all | Symfony environment: `prod` in the images, `dev` locally. |
 | `ELASTICSEARCH_HOST`, `ELASTICSEARCH_PORT` | worker, crawl | Override the connection in `crawler.yml`. |
 | `ELASTICSEARCH_API_KEY` or `ELASTICSEARCH_USERNAME` and `ELASTICSEARCH_PASSWORD` | worker, crawl | Credentials. Never put them in `crawler.yml`. |
+| `OPENAI_API_KEY` | worker, crawl | The embeddings API key. Without it, local development uses made-up vectors (fine for testing indexing, not search quality); production fails until it's set. |
+| `OPENAI_BASE_URL` | worker, crawl | Default `https://api.openai.com/v1`. For Azure OpenAI: `https://<resource>.openai.azure.com/openai/deployments/{model}`. |
 | `CRAWL_LIMIT_PER_DOMAIN` | local crawl | Pages per site (default 50, `0` for all). |
 
 To add a site, add it to `domains` in `config/crawler.yml` (copy the settings
@@ -126,10 +151,11 @@ make build-openshift                      # DOCKER_BUILD_TAG=dev for the dev bas
 | Resource | Notes |
 |---|---|
 | Webhook Deployment | Port 8080, probes on `GET /health`, a Route in front. `WEBHOOK_TOKEN` from a Secret. |
-| Worker CronJob | `*/30 * * * *`, `concurrencyPolicy: Forbid`. `ELASTICSEARCH_*` variables, credentials from a Secret. |
+| Worker CronJob | `*/30 * * * *`, `concurrencyPolicy: Forbid`. `ELASTICSEARCH_*` and `OPENAI_*` variables, credentials and the API key from a Secret. |
 | Full crawl CronJob | The worker image with `php /app/bin/console app:crawl`, e.g. nightly. Same variables. |
 | Queue volume | `ReadWriteMany` (e.g. `azure-file`), mounted at `/app/var/queue` in the webhook and the worker. Writable by group 0. Not at `/app/var`: Symfony's cache (`/app/var/cache`) is built into the images. |
-| Elasticsearch | External. Create the `hel-fi` pipeline from `config/pipeline.json` once. |
+| Setup | `php /app/bin/console app:setup` in the worker image, on every deployment (e.g. a Job or an init container): creates missing indexes, leaves existing ones alone. |
+| Elasticsearch | External. Vectors take space: about 12 kB per chunk in the search index and 16 kB in the cache. |
 
 Both images run as any non-root user, as OpenShift requires.
 
@@ -139,7 +165,13 @@ Both images run as any non-root user, as OpenShift requires.
 - Only the notified page is reindexed; listings and other pages showing the
   same content wait for the next full crawl. Run one regularly.
 - `update` for a page that no longer exists keeps its document: send `delete`.
+  The next full crawl removes it otherwise.
 - Pages must be public; the crawler fetches them anonymously.
-- `body` excludes `header`, `nav`, `aside` and `footer`, but can't be limited
-  to `<main>`, so other page chrome stays in it.
+- Only HTML pages are indexed, not attachments (PDFs etc.).
+- Sites without `<meta name="helfi_content_type">` get no `entity_bundle`.
+- The content cleaning is tuned for hel.fi platform pages
+  (`<main class="layout-main-wrapper">`, its CSS classes); on other layouts,
+  menus and other page chrome can end up in the content.
+- Changing a page's intro re-embeds all its chunks: every chunk includes its
+  parent section's snippet as context.
 - One token for all sites, and no rate limiting.

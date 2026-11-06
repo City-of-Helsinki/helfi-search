@@ -5,7 +5,7 @@ declare(strict_types=1);
 namespace App\Command;
 
 use App\CrawlerConfigLoader;
-use App\Worker\Crawler;
+use App\Indexer\IndexerInterface;
 use App\Worker\Elasticsearch;
 use Psr\Log\LoggerInterface;
 use Symfony\Component\Console\Attribute\AsCommand;
@@ -19,7 +19,7 @@ final class CrawlCommand extends Command
 {
     public function __construct(
         private readonly CrawlerConfigLoader $config,
-        private readonly Crawler $crawler,
+        private readonly IndexerInterface $indexer,
         private readonly LoggerInterface $logger,
     ) {
         parent::__construct();
@@ -37,16 +37,17 @@ final class CrawlCommand extends Command
             )
             ->setHelp(<<<'HELP'
                 By default, runs one crawl with crawler.yml as is: every page of every
-                site, then the purge step that removes documents for pages that are gone.
+                site, processed into the search index. Then removes the pages that are
+                gone, from the crawler's index and the search index.
 
                 With <info>--limit-per-domain</info>, runs one crawl per site, without the
                 purge step. The crawler counts every URL it handles toward the limit,
                 including redirects and non-HTML files, so a site gets at most that many
                 documents, usually fewer.
 
-                Limited crawls don't purge: a purge deletes every document the crawl
-                didn't visit, which would include the other sites and every page past the
-                limit. Documents from earlier crawls stay in the index.
+                Limited crawls don't remove anything: that would delete every page the
+                crawl didn't visit, including the other sites and every page past the
+                limit. Pages from earlier crawls stay in the indexes.
                 HELP);
     }
 
@@ -68,7 +69,7 @@ final class CrawlCommand extends Command
 
             if ($limit === 0) {
                 $this->logger->info('Crawling all sites.');
-                $this->crawler->crawl($settings);
+                $this->indexer->crawl($config, $settings, sweep: true);
                 return self::SUCCESS;
             }
 
@@ -77,11 +78,11 @@ final class CrawlCommand extends Command
                     'limit' => $limit,
                     'site' => $domain['url'],
                 ]);
-                $this->crawler->crawl([
+                $this->indexer->crawl($config, [
                     'domains' => [$domain],
                     'max_unique_url_count' => $limit,
                     'purge_crawl_enabled' => false,
-                ] + $settings);
+                ] + $settings, sweep: false);
             }
         } catch (\Throwable $e) {
             $this->logger->error('{error}', ['error' => $e->getMessage(), 'exception' => $e]);

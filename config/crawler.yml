@@ -13,40 +13,13 @@
 ##   array will be crawled concurrently by the Open Crawler with a shared output.
 ##   They are separated to allow for domain-specific configurations.
 #
+# The crawler only fetches the pages: it stores each page's HTML
+# (full_html_extraction_enabled) in output_index, and the worker turns it into
+# the search index (src/Indexer/). What's indexed from a page (the content,
+# title, language, content type) is decided there, not here.
 domains:
   - url: https://nuorten.hel.fi
-    # Index only the page content: drop the site header, menus, sidebars and
-    # footer from the body field. Only plain HTML5 tag names are accepted here,
-    # not CSS selectors.
-    exclude_tags:
-      - header
-      - nav
-      - aside
-      - footer
-    # title, meta_description and meta_keywords are extracted by default. A rule
-    # that selects a <meta> element stores its content attribute.
-    extraction_rulesets:
-      - rules:
-          - action: extract
-            field_name: og_image
-            selector: 'meta[property="og:image"]'
-            join_as: string
-            source: html
-  # Same settings as above. A Drupal (hel.fi platform) site with the same
-  # header/nav/main/footer layout.
   - url: https://avustukset.hel.fi
-    exclude_tags:
-      - header
-      - nav
-      - aside
-      - footer
-    extraction_rulesets:
-      - rules:
-          - action: extract
-            field_name: og_image
-            selector: 'meta[property="og:image"]'
-            join_as: string
-            source: html
 #  - url: http://localhost:8000        # The base URL for this domain
 #    seed_urls:                         # The entry point(s) for crawl jobs
 #      - http://localhost:8000/foo
@@ -95,7 +68,8 @@ domains:
 output_sink: elasticsearch
 #
 ## Elasticsearch index name to ingest crawl results into. Required if output_sink is elasticsearch
-output_index: hel-fi
+## The crawled pages, read by the worker; created by bin/console app:setup.
+output_index: hel-fi-pages
 #
 ## Local directory to output crawl results. The defult value is ./crawled_docs
 ##   This will appear at the top level of your Open Crawler directory if running from source,
@@ -114,7 +88,8 @@ output_index: hel-fi
 #
 ## Whether or not to include the full HTML in the crawl result Enabling full HTML extraction can
 ##   dramatically increase the index size if the site being crawled is large. Defaults to false.
-#full_html_extraction_enabled: false
+## The worker processes the HTML.
+full_html_extraction_enabled: true
 #
 ## Scheduling using cron expressions
 #schedule:
@@ -289,15 +264,13 @@ elasticsearch:
   #username: elastic
   #password: changeme
   #api_key: 1234
-  # Defined in pipeline.json. Elasticsearch 9 no longer installs Elastic's
-  # ent-search-generic-ingestion pipeline, so don't refer to it. The crawler
-  # still adds its pipeline parameters (_reduce_whitespace etc.) to every
-  # document; the hel-fi pipeline removes them.
-  pipeline: hel-fi
-  pipeline_enabled: true
+  # No ingest pipeline: the worker processes the pages. (Elasticsearch 9 no
+  # longer has the crawler's default ent-search-generic-ingestion pipeline.)
+  pipeline_enabled: false
   bulk_api:
     max_items: 10
-    max_size_bytes: 1_048_576
+    # Pages with their full HTML are big.
+    max_size_bytes: 5_242_880
 
 ## The interval in seconds to wait before retrying to acquire the sink lock.
 #sink_lock_retry_interval: 1

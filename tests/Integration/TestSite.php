@@ -15,6 +15,7 @@ final class TestSite
     public readonly string $url;
     private readonly string $root;
     private readonly string $log;
+    private readonly string $router;
 
     /** @var resource */
     private $server;
@@ -24,6 +25,17 @@ final class TestSite
         $this->root = sys_get_temp_dir() . '/helfi-search-site-' . bin2hex(random_bytes(6));
         mkdir($this->root, 0775, true);
         $this->log = $this->root . '.log';
+        // Without a router, the server answers missing pages with index.html.
+        $this->router = $this->root . '.router.php';
+        file_put_contents($this->router, <<<'PHP'
+            <?php
+            $path = parse_url($_SERVER['REQUEST_URI'], PHP_URL_PATH);
+            if ($path === '/' || is_file($_SERVER['DOCUMENT_ROOT'] . $path)) {
+                return false;
+            }
+            http_response_code(404);
+            echo 'Not found';
+            PHP);
 
         // Any free port.
         $socket = stream_socket_server('tcp://127.0.0.1:0');
@@ -35,7 +47,7 @@ final class TestSite
         $this->url = "http://127.0.0.1:$port";
 
         $server = proc_open(
-            ['php', '-S', "127.0.0.1:$port", '-t', $this->root],
+            ['php', '-S', "127.0.0.1:$port", '-t', $this->root, $this->router],
             [0 => ['file', '/dev/null', 'r'], 1 => ['file', $this->log, 'a'], 2 => ['file', $this->log, 'a']],
             $pipes,
             null,
@@ -60,7 +72,7 @@ final class TestSite
     {
         proc_terminate($this->server);
         proc_close($this->server);
-        (new Filesystem())->remove([$this->root, $this->log]);
+        (new Filesystem())->remove([$this->root, $this->log, $this->router]);
     }
 
     /**
@@ -87,6 +99,8 @@ final class TestSite
      * indexed.
      *
      * @param array<string, string> $links Link texts by path.
+     * @param array<string, array{string, string}> $sections Sections after
+     *   the content: [heading, text] by heading anchor.
      */
     public function page(
         string $title,
@@ -95,8 +109,13 @@ final class TestSite
         string $image = '',
         array $links = [],
         string $canonical = '',
+        string $bundle = 'page',
+        array $sections = [],
     ): string {
-        $head = '';
+        $head = '<meta property="og:title" content="' . htmlspecialchars($title) . '">';
+        if ($bundle !== '') {
+            $head .= '<meta name="helfi_content_type" content="' . htmlspecialchars($bundle) . '" class="elastic">';
+        }
         if ($description !== '') {
             $head .= '<meta name="description" content="' . htmlspecialchars($description) . '">';
         }
@@ -110,15 +129,20 @@ final class TestSite
         foreach ($links as $path => $text) {
             $nav .= '<a href="' . htmlspecialchars($path) . '">' . htmlspecialchars($text) . '</a> ';
         }
+        $main = '';
+        foreach ($sections as $id => [$heading, $text]) {
+            $main .= '<h2 id="' . htmlspecialchars($id) . '">' . htmlspecialchars($heading) . '</h2>'
+                . '<p>' . htmlspecialchars($text) . '</p>';
+        }
 
         return <<<HTML
             <!DOCTYPE html>
             <html lang="fi">
-            <head><meta charset="utf-8"><title>{$title}</title>{$head}</head>
+            <head><meta charset="utf-8"><title>{$title} | Test site</title>{$head}</head>
             <body>
               <header>Site header text</header>
               <nav>Navigation text {$nav}</nav>
-              <main><h1>{$title}</h1><p>{$content}</p></main>
+              <main class="layout-main-wrapper"><h1>{$title}</h1><p>{$content}</p>{$main}</main>
               <aside>Sidebar text</aside>
               <footer>Site footer text</footer>
             </body>
