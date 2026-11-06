@@ -33,21 +33,21 @@ services:
     networks:
       - internal
 
-  # Creates (or updates) the ingest pipeline used by the crawler, then exits.
-  pipeline:
-    image: docker.elastic.co/elasticsearch/elasticsearch:9.5.3
-    entrypoint:
-      - curl
-      - -fsS
-      - -X
-      - PUT
-      - http://crawler-elastic:9200/_ingest/pipeline/hel-fi
-      - -H
-      - "Content-Type: application/json"
-      - --data-binary
-      - "@/pipeline.json"
+  # Creates the indexes that are missing (bin/console app:setup), then exits.
+  setup:
+    build:
+      context: .
+      dockerfile: docker/local/Dockerfile
+      target: elasticsearch-crawler
+    image: helfi-search-elasticsearch-crawler-local
+    user: "${LOCAL_UID:-1000}:0"
+    cap_drop: [ALL]
+    security_opt: ["no-new-privileges:true"]
+    environment:
+      APP_ENV: dev
+    command: ["php", "/app/bin/console", "app:setup"]
     volumes:
-      - ./config/pipeline.json:/pipeline.json:ro
+      - .:/app:delegated
     networks:
       - internal
     depends_on:
@@ -84,6 +84,8 @@ services:
     security_opt: ["no-new-privileges:true"]
     environment:
       APP_ENV: dev
+      OPENAI_API_KEY: ${OPENAI_API_KEY:-}
+      OPENAI_BASE_URL: ${OPENAI_BASE_URL:-https://api.openai.com/v1}
     command: ["php", "/app/bin/console", "app:crawl", "--limit-per-domain=${CRAWL_LIMIT_PER_DOMAIN:-50}"]
     volumes:
       - .:/app:delegated
@@ -92,7 +94,7 @@ services:
     depends_on:
       crawler-elastic:
         condition: service_healthy
-      pipeline:
+      setup:
         condition: service_completed_successfully
 
   # Receives content update notifications and writes them into the queue
@@ -140,6 +142,8 @@ services:
     security_opt: ["no-new-privileges:true"]
     environment:
       APP_ENV: dev
+      OPENAI_API_KEY: ${OPENAI_API_KEY:-}
+      OPENAI_BASE_URL: ${OPENAI_BASE_URL:-https://api.openai.com/v1}
     command: ["php", "/app/bin/console", "app:worker", "--every=1800"]
     volumes:
       - .:/app:delegated
@@ -148,7 +152,7 @@ services:
     depends_on:
       crawler-elastic:
         condition: service_healthy
-      pipeline:
+      setup:
         condition: service_completed_successfully
 
 networks:
