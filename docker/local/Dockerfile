@@ -27,7 +27,7 @@ FROM ghcr.io/city-of-helsinki/helfi-search-elasticsearch-crawler:dev AS elastics
 USER root
 # phar and openssl are needed by Composer; dom, xml and xmlwriter by PHPUnit,
 # for the integration tests (tests/Integration), which need the crawler.
-RUN apk add --no-cache php-8.4-phar php-8.4-openssl php-8.4-dom php-8.4-xml php-8.4-xmlwriter
+RUN apk add --no-cache php-8.5-phar php-8.5-openssl php-8.5-dom php-8.5-xml php-8.5-xmlwriter
 COPY --from=composer:2 /usr/bin/composer /usr/local/bin/composer
 
 ENV COMPOSER_HOME=/tmp/composer

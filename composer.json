@@ -4,7 +4,7 @@
     "type": "project",
     "license": "MIT",
     "require": {
-        "php": "^8.4",
+        "php": "^8.5",
         "guzzlehttp/guzzle": "^7.10",
         "psr/log": "^3.0",
         "symfony/filesystem": "^7.3",
