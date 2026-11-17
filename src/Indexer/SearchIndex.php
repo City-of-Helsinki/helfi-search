@@ -19,17 +19,22 @@ final readonly class SearchIndex
 
     /**
      * @param list<string> $ids
-     * @return array<string, string> The stored documents' content hashes, by
-     *   ID. Documents that aren't stored are left out.
+     * @return array<string, array{hash: string, crawledAt: string|null}> The
+     *   stored documents' content hashes and crawl times, by ID. Documents
+     *   that aren't stored are left out.
      */
-    public function contentHashes(array $ids): array
+    public function stored(array $ids): array
     {
-        $hashes = [];
-        foreach ($this->elasticsearch->mget($this->index, $ids, ['content_hash']) as $id => $source) {
-            $hashes[$id] = is_string($source['content_hash'] ?? null) ? $source['content_hash'] : '';
+        $stored = [];
+        $sources = $this->elasticsearch->mget($this->index, $ids, ['content_hash', 'last_crawled_at']);
+        foreach ($sources as $id => $source) {
+            $stored[$id] = [
+                'hash' => is_string($source['content_hash'] ?? null) ? $source['content_hash'] : '',
+                'crawledAt' => is_string($source['last_crawled_at'] ?? null) ? $source['last_crawled_at'] : null,
+            ];
         }
 
-        return $hashes;
+        return $stored;
     }
 
     /**

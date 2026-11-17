@@ -25,7 +25,8 @@ use Psr\Log\LoggerInterface;
  * it's processed, so any number of crawls can run at once.
  *
  * @phpstan-type Stats array{
- *   pages: int, changed: int, unchanged: int, skipped: int, failed: int, embedded: int, reused: int,
+ *   pages: int, changed: int, unchanged: int, skipped: int, outdated: int, failed: int, embedded: int,
+ *   reused: int,
  * }
  */
 final readonly class Indexer implements IndexerInterface
@@ -72,7 +73,8 @@ final readonly class Indexer implements IndexerInterface
 
         $this->logger->info(
             'Processed {pages} page(s): {changed} changed, {unchanged} unchanged, {skipped} deleted meanwhile, '
-                . '{failed} failed. Embedded {embedded} chunk(s), reused {reused}.',
+                . '{outdated} older than the indexed version, {failed} failed. '
+                . 'Embedded {embedded} chunk(s), reused {reused}.',
             $stats,
         );
 
@@ -146,6 +148,7 @@ final readonly class Indexer implements IndexerInterface
             'changed' => 0,
             'unchanged' => 0,
             'skipped' => 0,
+            'outdated' => 0,
             'failed' => 0,
             'embedded' => 0,
             'reused' => 0,
@@ -210,14 +213,29 @@ final readonly class Indexer implements IndexerInterface
         }
 
         $processed = $this->withoutDeleted($processed, $stats);
+        $stored = $search->stored(array_keys($sources));
 
-        // Unchanged pages only get their processing time updated, so the
-        // full crawl's sweep keeps them.
-        $stored = $search->contentHashes(array_keys($sources));
+        // Pages this crawl found, but doesn't write, only get their
+        // processing time updated, so the full crawl's sweep keeps them.
         $touch = [];
+
+        // A crawl that fetched a page before another crawl indexed a newer
+        // version (e.g. a long full crawl, and a webhook update meanwhile)
+        // must not replace it with the older one.
+        foreach ($processed as $id => $page) {
+            $storedAt = strtotime((string) ($stored[$id]['crawledAt'] ?? ''));
+            $crawledAt = strtotime((string) $page->page->lastCrawledAt);
+            if ($storedAt !== false && $crawledAt !== false && $storedAt > $crawledAt) {
+                unset($processed[$id]);
+                $touch[$id] = ['processed_at' => $now];
+                $stats['outdated']++;
+                $this->logger->info('Skipped {url}: a newer version is already indexed.', ['url' => $page->page->url]);
+            }
+        }
+
         $changed = [];
         foreach ($processed as $id => $page) {
-            if (($stored[$id] ?? null) === $page->contentHash) {
+            if (($stored[$id]['hash'] ?? null) === $page->contentHash) {
                 $touch[$id] = ['processed_at' => $now, 'last_crawled_at' => $page->page->lastCrawledAt];
             } else {
                 $changed[$id] = $page;

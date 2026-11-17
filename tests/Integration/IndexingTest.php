@@ -500,6 +500,38 @@ final class IndexingTest extends WebTestCase
         );
     }
 
+    /**
+     * A crawl that fetched a page before a newer version was indexed (e.g. a
+     * long full crawl, and a webhook update meanwhile) keeps the newer one.
+     */
+    #[Depends('testSweepKeepsOtherSites')]
+    public function testOlderCrawlDoesNotReplaceANewerVersion(): void
+    {
+        $url = self::$site->pageUrl('/page-b.html');
+        $before = $this->document('/page-b.html');
+        $this->assertNotNull($before);
+        // As if another crawl indexed page B after the crawl below fetches it.
+        // Its processing time stays older than the crawl's start: the sweep
+        // must keep the page anyway, since the crawl found it.
+        $newer = gmdate('Y-m-d\TH:i:s\Z', time() + 3600);
+        self::$elasticsearch->post('/' . self::$indexes->search . '/_update_by_query?refresh=true', [
+            RequestOptions::JSON => [
+                'query' => ['term' => ['url' => $url]],
+                'script' => ['source' => 'ctx._source.last_crawled_at = params.t', 'params' => ['t' => $newer]],
+            ],
+        ]);
+        self::$site->write('/page-b.html', self::$site->page('Page B, older', 'An older version of page B.'));
+
+        $logger = new CollectingLogger();
+        sleep(1);
+        $this->fullCrawl($logger);
+
+        $after = $this->document('/page-b.html');
+        $this->assertSame($before['label'] ?? null, $after['label'] ?? null, 'Not replaced.');
+        $this->assertSame($newer, $after['last_crawled_at'] ?? null);
+        $this->assertContains("Skipped $url: a newer version is already indexed.", $logger->messages('info'));
+    }
+
     public function testCleanUpRemovesAbandonedCrawlIndexes(): void
     {
         $abandoned = self::$indexes->crawlPrefix . '-20200101-000000-0123abcd';
