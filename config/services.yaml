@@ -9,6 +9,29 @@ parameters:
     # empty.
     env(WEBHOOK_TOKEN): ''
     env(APP_SECRET): ''
+    # The search index (an alias) and the embedding cache. The crawler's own
+    # index is output_index in crawler.yml. See src/Indexer/Indexes.php.
+    app.search_index: hel-fi
+    app.embedding_cache_index: hel-fi-embedding-cache
+    # The embeddings API. Without a key, development uses made-up vectors.
+    # See src/Embedding/OpenAiEmbeddingClient.php.
+    env(OPENAI_API_KEY): ''
+    env(OPENAI_BASE_URL): 'https://api.openai.com/v1'
+    # Elements with these classes aren't page content (src/Pipeline/HtmlCleaner.php).
+    app.ignored_classes:
+        - is-hidden
+        - visually-hidden
+        - skip-link
+        - table-of-contents
+        - component--recommendations
+        - component--map
+        - component--hearings
+        - component--list-of-links
+        - announcement
+        - content-tags
+        - content-date
+        - content-links
+        - block--askem
 
 services:
     _defaults:
@@ -24,9 +47,15 @@ services:
             - '../src/Site.php'
             - '../src/Queue/Action.php'
             - '../src/Queue/Request.php'
+            - '../src/Pipeline/{Chunk,Document,Heading,HeadingFragment,PipelineException,Text}.php'
+            - '../src/Embedding/{EmbeddingException,EmbeddingModel,Vector}.php'
+            - '../src/Indexer/{Page,PageMetadata,ProcessedPage}.php'
             # Created per run, from the crawler config.
             - '../src/Worker/Elasticsearch.php'
             - '../src/Worker/FailedDocumentCounter.php'
+            - '../src/Indexer/{EmbeddingCache,SearchIndex}.php'
+            # Created by EmbeddingClientFactory.
+            - '../src/Embedding/{FakeEmbeddingClient,OpenAiEmbeddingClient}.php'
 
     App\CrawlerConfigLoader:
         arguments: ['%app.crawler_config%']
@@ -34,11 +63,26 @@ services:
     App\Queue\QueueFolder:
         arguments: ['%app.queue_dir%']
 
+    App\Embedding\EmbeddingClient:
+        factory: ['App\Embedding\EmbeddingClientFactory', 'create']
+        arguments:
+            $apiKey: '%env(OPENAI_API_KEY)%'
+            $baseUrl: '%env(OPENAI_BASE_URL)%'
+            $environment: '%kernel.environment%'
+
+    App\Indexer\Indexes:
+        arguments: ['%app.search_index%', '%app.embedding_cache_index%']
+
     App\Webhook\TokenListener:
         arguments:
             $token: '%env(WEBHOOK_TOKEN)%'
 
 when@test:
+    services:
+        # Never the real API in tests.
+        App\Embedding\EmbeddingClient:
+            class: App\Embedding\FakeEmbeddingClient
+
     parameters:
         # Tests point these at temporary files: see tests/KernelEnvironmentTrait.php.
         app.crawler_config: '%env(TEST_CRAWLER_CONFIG)%'

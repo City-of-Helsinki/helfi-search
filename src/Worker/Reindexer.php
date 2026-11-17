@@ -6,6 +6,7 @@ namespace App\Worker;
 
 use App\CrawlerConfig;
 use App\CrawlerConfigLoader;
+use App\Indexer\IndexerInterface;
 use App\Queue\Action;
 use App\Queue\Spool;
 use Psr\Log\LoggerInterface;
@@ -22,7 +23,7 @@ final class Reindexer
         private readonly Spool $queue,
         private readonly CrawlerConfigLoader $config,
         private readonly LoggerInterface $logger,
-        private readonly Crawler $crawler,
+        private readonly IndexerInterface $indexer,
     ) {
     }
 
@@ -53,12 +54,11 @@ final class Reindexer
             $config = $this->config->load();
 
             if ($deletes) {
-                $es = Elasticsearch::fromConfig($config);
-                $deleted = $es->deleteByUrls($deletes);
+                $deleted = $this->indexer->delete($config, $deletes);
                 $this->logger->info('Deleted {count} document(s).', ['count' => $deleted]);
             }
             if ($updates) {
-                $this->crawler->crawl($this->targetedConfig($config, $updates));
+                $this->indexer->crawl($config, $this->targetedConfig($config, $updates), sweep: false);
             }
         } catch (\Throwable $e) {
             $this->queue->release($batch);
@@ -94,8 +94,8 @@ final class Reindexer
             $seeds[$domain][] = $url;
         }
 
-        // Keep each domain's own settings (exclude_tags, extraction rules),
-        // but only for the domains in this batch.
+        // Keep each domain's own settings, but only for the domains in this
+        // batch.
         $domains = [];
         foreach ($config->domains() as $site => $domain) {
             if (isset($seeds[$site])) {

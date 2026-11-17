@@ -1,0 +1,211 @@
+<?php
+
+declare(strict_types=1);
+
+namespace App\Pipeline;
+
+use Symfony\Component\DependencyInjection\Attribute\Autowire;
+
+/**
+ * Cleans HTML by removing non-content elements before Markdown conversion.
+ */
+class HtmlCleaner
+{
+    /**
+     * Tags to remove entirely (including their children).
+     */
+    private const array REMOVE_TAGS = [
+        'head', 'script', 'style', 'nav', 'footer', 'header',
+        'aside', 'form', 'button', 'input', 'select', 'textarea',
+        'iframe', 'embed', 'object', 'noscript', 'time',
+    ];
+
+    /**
+     * Element IDs to remove.
+     */
+    private const array REMOVE_IDS = [
+        'helfi-survey__container',
+    ];
+
+    public function __construct(
+        /** @var list<string> CSS classes of elements that aren't content. */
+        #[Autowire(param: 'app.ignored_classes')] private readonly array $ignoredClasses = [],
+    ) {
+    }
+
+    /**
+     * Clean a parsed HTML document by removing non-content elements.
+     *
+     * @param \DOMDocument $doc
+     *   Parsed HTML document to clean.
+     *
+     * @return string
+     *   Cleaned HTML string.
+     */
+    public function clean(\DOMDocument $doc): string
+    {
+        // Remove non-content tags and boilerplate class patterns.
+        $this->removeNonContentElements($doc);
+
+        // Replace links with their text content (URLs are noise for embeddings).
+        $this->unwrapLinks($doc);
+
+        // Replace images with their alt text.
+        $this->replaceImagesWithAlt($doc);
+
+        // Remove empty div and span wrappers left after cleaning.
+        $this->removeEmptyWrappers($doc);
+
+        return $doc->saveHTML() ?: '';
+    }
+
+    /**
+     * Remove every node an XPath expression matches.
+     *
+     * Converts to array first since the live list changes during removal.
+     *
+     * @return int
+     *   How many nodes were removed.
+     */
+    private static function removeMatching(\DOMXPath $xpath, string $expression): int
+    {
+        $nodes = $xpath->query($expression);
+
+        if (!$nodes) {
+            return 0;
+        }
+
+        $removed = 0;
+
+        foreach (iterator_to_array($nodes) as $node) {
+            // An expression can also select namespace nodes, which are not children
+            // of the element they are declared on and cannot be removed from it.
+            if ($node instanceof \DOMNode && $node->parentNode !== null) {
+                $node->parentNode->removeChild($node);
+                $removed++;
+            }
+        }
+
+        return $removed;
+    }
+
+    /**
+     * Check whether a node is inside a heading element (h1–h6).
+     */
+    private function isInsideHeading(\DOMNode $node): bool
+    {
+        $parent = $node->parentNode;
+        while ($parent) {
+            if ($parent instanceof \DOMElement && preg_match('/^h[1-6]$/i', $parent->tagName)) {
+                return true;
+            }
+            $parent = $parent->parentNode;
+        }
+        return false;
+    }
+
+    /**
+     * Replace a node with its children, preserving their content.
+     */
+    private function unwrapNode(\DOMNode $node): void
+    {
+        $parent = $node->parentNode;
+        if (!$parent) {
+            return;
+        }
+        while ($node->firstChild) {
+            $parent->insertBefore($node->firstChild, $node);
+        }
+        $parent->removeChild($node);
+    }
+
+    /**
+     * Remove non-content tags and elements with boilerplate CSS classes.
+     */
+    private function removeNonContentElements(\DOMDocument $doc): void
+    {
+        foreach (self::REMOVE_TAGS as $tag) {
+            foreach (iterator_to_array($doc->getElementsByTagName($tag)) as $node) {
+                if ($this->isInsideHeading($node)) {
+                    $this->unwrapNode($node);
+                } else {
+                    $node->parentNode?->removeChild($node);
+                }
+            }
+        }
+
+        $xpath = new \DOMXPath($doc);
+
+        // Anything explicitly hidden from assistive tech is by definition not
+        // body content. This catches placeholder "ghost" cards rendered before
+        // a JS/HTMX widget swaps in real content, plus decorative icons
+        // independent of which CSS class the widget happens to use.
+        self::removeMatching($xpath, '//*[@aria-hidden="true"]');
+
+        // Uses the whitespace-boundary trick: pad @class with spaces so that
+        // contains() matches whole words only (e.g. " visually-hidden ").
+        foreach ($this->ignoredClasses as $class) {
+            self::removeMatching(
+                $xpath,
+                '//*[contains(concat(" ", normalize-space(@class), " "), " ' . $class . ' ")]'
+            );
+        }
+
+        foreach (self::REMOVE_IDS as $id) {
+            self::removeMatching($xpath, '//*[@id="' . $id . '"]');
+        }
+    }
+
+    /**
+     * Replace <a> tags with their text content.
+     */
+    private function unwrapLinks(\DOMDocument $doc): void
+    {
+        foreach (iterator_to_array($doc->getElementsByTagName('a')) as $link) {
+            $parent = $link->parentNode;
+            if (!$parent) {
+                continue;
+            }
+            // Move all children (text nodes, inline elements) before the <a>.
+            while ($link->firstChild) {
+                $parent->insertBefore($link->firstChild, $link);
+            }
+            $parent->removeChild($link);
+        }
+    }
+
+    /**
+     * Replace <img> tags with a text node containing the alt text.
+     */
+    private function replaceImagesWithAlt(\DOMDocument $doc): void
+    {
+        foreach (iterator_to_array($doc->getElementsByTagName('img')) as $img) {
+            $alt = trim($img->getAttribute('alt'));
+            if ($alt !== '') {
+                $img->parentNode?->removeChild($img);
+            } else {
+                $img->parentNode?->replaceChild($doc->createTextNode($alt), $img);
+            }
+        }
+    }
+
+    /**
+     * Iteratively remove wrappers and list containers with no real content.
+     *
+     * Treats whitespace-only text as empty so that prior cleanup passes
+     * (link unwrapping, image stripping, hidden-element removal) can leave
+     * an outer wrapper as a candidate for removal.
+     */
+    private function removeEmptyWrappers(\DOMDocument $doc): void
+    {
+        $tagFilter = "(local-name()='div' or local-name()='span' or local-name()='li'"
+            . " or local-name()='ul' or local-name()='ol')";
+        do {
+            $xpath = new \DOMXPath($doc);
+            // $tagFilter: must be one of the five wrapper tags.
+            // not(*): has no child elements.
+            // not(normalize-space()): has no text after collapsing whitespace.
+            $removed = self::removeMatching($xpath, "//*[$tagFilter and not(*) and not(normalize-space())]");
+        } while ($removed > 0);
+    }
+}

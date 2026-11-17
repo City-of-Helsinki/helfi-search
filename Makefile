@@ -63,7 +63,7 @@ process-queue: ## Process the queue now instead of waiting for the worker
 
 PHONY += search
 search: ## Show the indexed documents
-	$(COMPOSE) exec crawler-elastic curl -s "localhost:9200/hel-fi/_search?pretty"
+	$(COMPOSE) exec crawler-elastic curl -s "localhost:9200/hel-fi/_search?pretty&_source_excludes=markdown"
 
 PHONY += console
 console: ## Run a Symfony console command, e.g. make console ARGS="debug:router"

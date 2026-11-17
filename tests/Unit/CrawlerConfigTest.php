@@ -66,7 +66,7 @@ final class CrawlerConfigTest extends TestCase
         $config = CrawlerConfig::fromFile(dirname(__DIR__, 2) . '/config/crawler.yml');
 
         $this->assertNotEmpty($config->sites());
-        $this->assertSame('hel-fi', $config->index());
+        $this->assertSame('hel-fi-pages', $config->index());
     }
 
     public function testSites(): void

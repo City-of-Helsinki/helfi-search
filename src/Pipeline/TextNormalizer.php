@@ -1,0 +1,38 @@
+<?php
+
+declare(strict_types=1);
+
+namespace App\Pipeline;
+
+/**
+ * Applies minimal text normalization.
+ */
+final class TextNormalizer
+{
+    /**
+     * Normalize text.
+     *
+     * @param string $text
+     *   Text to normalize.
+     *
+     * @return string
+     *   Normalized text.
+     */
+    public static function normalize(string $text): string
+    {
+        if (empty($text)) {
+            return $text;
+        }
+
+        // Collapse multiple horizontal whitespace chars (non-newline) to one space.
+        $text = preg_replace('/[^\S\n]+/', ' ', $text) ?? $text;
+
+        // Remove spaces immediately before or after newlines.
+        $text = preg_replace('/ *\n */', "\n", $text) ?? $text;
+
+        // Limit consecutive newlines to a maximum of two.
+        $text = preg_replace('/\n{3,}/', "\n\n", $text) ?? $text;
+
+        return trim($text);
+    }
+}
