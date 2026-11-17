@@ -63,15 +63,21 @@ final readonly class SearchIndex
     }
 
     /**
-     * Deletes the documents not processed since the given time: pages the
-     * full crawl didn't find.
+     * Deletes the given sites' documents not processed since the given time:
+     * pages the full crawl didn't find.
      *
+     * @param list<string> $instances The sites' hosts, e.g. "nuorten.hel.fi".
      * @return int The number of deleted documents.
      */
-    public function deleteProcessedBefore(string $time): int
+    public function deleteProcessedBefore(string $time, array $instances): int
     {
+        if ($instances === []) {
+            return 0;
+        }
+
         return $this->elasticsearch->deleteByQuery($this->index, [
             'bool' => [
+                'filter' => [['terms' => ['instance' => $instances]]],
                 'should' => [
                     ['range' => ['processed_at' => ['lt' => $time]]],
                     ['bool' => ['must_not' => ['exists' => ['field' => 'processed_at']]]],

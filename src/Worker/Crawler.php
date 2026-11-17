@@ -38,11 +38,13 @@ final class Crawler
      *
      * @param array<string, mixed> $config A complete crawler config, in the
      *   same structure as crawler.yml.
+     * @param (\Closure(): void)|null $tick Called whenever the crawler prints
+     *   something. An exception it throws stops the crawler, and is rethrown.
      *
      * @throws \RuntimeException If the crawler fails, or any page fails to
      *   index.
      */
-    public function crawl(array $config): void
+    public function crawl(array $config, ?\Closure $tick = null): void
     {
         $file = $this->filesystem->tempnam(sys_get_temp_dir(), 'crawl-', '.yml');
         $this->filesystem->dumpFile($file, Yaml::dump($config, 10, 2));
@@ -55,10 +57,18 @@ final class Crawler
             // reading it all at the end: a large failing crawl can log more
             // than PHP's memory limit.
             $counter = new FailedDocumentCounter();
-            $process->run(function (string $type, string $text) use ($counter): void {
-                ($this->output)($type, $text);
-                $counter->read($type, $text);
-            });
+            try {
+                $process->run(function (string $type, string $text) use ($counter, $tick): void {
+                    ($this->output)($type, $text);
+                    $counter->read($type, $text);
+                    if ($tick !== null) {
+                        $tick();
+                    }
+                });
+            } catch (\Throwable $e) {
+                $process->stop(10);
+                throw $e;
+            }
             if (!$process->isSuccessful()) {
                 throw new \RuntimeException("The crawler exited with code {$process->getExitCode()}.");
             }

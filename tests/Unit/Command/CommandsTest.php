@@ -5,20 +5,21 @@ declare(strict_types=1);
 namespace App\Tests\Unit\Command;
 
 use App\Command\CrawlCommand;
+use App\Command\QueueCommand;
 use App\Command\WorkerCommand;
 use App\CrawlerConfig;
 use App\CrawlerConfigLoader;
 use App\Kernel;
 use App\Queue\Action;
-use App\Queue\QueueFolder;
-use App\Queue\QueueWriter;
-use App\Queue\Request;
-use App\Queue\Spool;
+use App\Queue\Batch;
+use App\Queue\RedisClientFactory;
+use App\Queue\RedisQueue;
 use App\Site;
 use App\Tests\KernelEnvironmentTrait;
-use App\Tests\Unit\CollectingLogger;
+use App\Tests\RedisTrait;
 use App\Tests\Unit\TemporaryDirectoryTrait;
 use App\Worker\Elasticsearch;
+use App\Worker\Lease;
 use App\Worker\Reindexer;
 use PHPUnit\Framework\Attributes\CoversClass;
 use PHPUnit\Framework\Attributes\UsesClass;
@@ -33,39 +34,41 @@ use Symfony\Component\Console\Tester\CommandTester;
  */
 #[CoversClass(WorkerCommand::class)]
 #[CoversClass(CrawlCommand::class)]
+#[CoversClass(QueueCommand::class)]
 #[UsesClass(Kernel::class)]
+#[UsesClass(Batch::class)]
 #[UsesClass(CrawlerConfig::class)]
 #[UsesClass(CrawlerConfigLoader::class)]
 #[UsesClass(Elasticsearch::class)]
-#[UsesClass(QueueFolder::class)]
-#[UsesClass(QueueWriter::class)]
-#[UsesClass(Request::class)]
-#[UsesClass(Spool::class)]
+#[UsesClass(Lease::class)]
+#[UsesClass(RedisClientFactory::class)]
+#[UsesClass(RedisQueue::class)]
 #[UsesClass(Reindexer::class)]
 #[UsesClass(Site::class)]
 final class CommandsTest extends KernelTestCase
 {
     use TemporaryDirectoryTrait;
     use KernelEnvironmentTrait;
+    use RedisTrait;
 
     private const string CONFIG = <<<'YAML'
         domains:
           - url: https://nuorten.hel.fi
-        output_index: hel-fi
+          - url: https://avustukset.hel.fi
         elasticsearch:
           # Nothing listens here.
           host: http://127.0.0.1
           port: 1
         YAML;
 
-    private string $queueDir;
+    private RedisQueue $queue;
 
     protected function setUp(): void
     {
-        $this->queueDir = $this->temporaryDirectory() . '/queue';
         $configFile = $this->temporaryDirectory() . '/crawler.yml';
         file_put_contents($configFile, self::CONFIG);
-        self::configureKernel($this->queueDir, $configFile);
+        self::configureKernel($configFile, $this->redisPrefix());
+        $this->queue = new RedisQueue($this->redis(), $this->redisPrefix());
     }
 
     private function command(string $name): CommandTester
@@ -73,52 +76,62 @@ final class CommandsTest extends KernelTestCase
         return new CommandTester((new Application(self::bootKernel()))->find($name));
     }
 
+    /**
+     * @param array<string, string|bool> $options
+     */
+    private function worker(array $options = []): int
+    {
+        return $this->command('app:worker')->execute($options + [
+            '--once' => true,
+            '--settle' => '0',
+            '--alive-file' => $this->temporaryDirectory() . '/alive',
+        ]);
+    }
+
     public function testWorkerWithAnEmptyQueue(): void
     {
-        $this->assertSame(Command::SUCCESS, $this->command('app:worker')->execute([]));
-        $this->assertSame(['Queue is empty.'], self::loggedMessages('info'));
+        $this->assertSame(Command::SUCCESS, $this->worker());
+        $this->assertSame(['Nothing left to claim.'], self::loggedMessages('info'));
+        $this->assertFileExists($this->temporaryDirectory() . '/alive', 'For the liveness probe.');
+        $this->assertCount(1, $this->queue->stats()['workers'], 'Seen.');
     }
 
     public function testWorkerReturnsAFailedBatchAndFails(): void
     {
         // Deletes fail: Elasticsearch isn't reachable.
-        (new QueueWriter(new QueueFolder($this->queueDir)))
-            ->add(Request::now('https://nuorten.hel.fi/a', Action::Delete));
+        $this->queue->add('https://nuorten.hel.fi/a', Action::Delete);
 
-        $this->assertSame(Command::FAILURE, $this->command('app:worker')->execute([]));
+        $this->assertSame(Command::FAILURE, $this->worker());
         $this->assertCount(1, self::loggedMessages('error'));
-        $this->assertCount(1, glob("$this->queueDir/incoming/*.json") ?: [], 'Back in the queue.');
+        $this->assertSame(1, $this->queue->stats()['pending'], 'Back in the queue.');
     }
 
-    public function testWorkerReleasesUnfinishedBatches(): void
+    public function testWorkerWaitsForChangesToSettle(): void
     {
-        $folder = new QueueFolder($this->queueDir);
-        (new QueueWriter($folder))->add(Request::now('https://nuorten.hel.fi/a', Action::Delete));
-        $spool = new Spool($folder, new CollectingLogger());
-        $spool->claim();
-        // Without a crawler or Elasticsearch, the released batch fails.
-        $this->command('app:worker')->execute([]);
+        $this->queue->add('https://nuorten.hel.fi/a', Action::Delete);
 
-        $this->assertContains('Returned 1 unfinished change(s) to the queue.', self::loggedMessages('info'));
+        $this->assertSame(Command::SUCCESS, $this->worker(['--settle' => '60']));
+        $this->assertSame(1, $this->queue->stats()['pending'], 'Not claimed yet.');
     }
 
-    public function testOnlyOneWorkerRuns(): void
+    public function testWorkerCannotReachRedis(): void
     {
-        $spool = new Spool(new QueueFolder($this->queueDir), new CollectingLogger());
-        $this->assertTrue($spool->lock());
+        self::configureKernel(
+            $this->temporaryDirectory() . '/crawler.yml',
+            $this->redisPrefix(),
+            redisUrl: 'redis://127.0.0.1:1',
+        );
 
-        // flock() locks are per open file, so this process conflicts with
-        // itself.
-        $this->assertSame(Command::SUCCESS, $this->command('app:worker')->execute([]));
-        $this->assertSame(['Another worker is running; nothing to do.'], self::loggedMessages('info'));
+        $this->assertSame(Command::FAILURE, $this->worker());
+        $this->assertStringStartsWith('Cannot claim changes: ', self::loggedMessages('error')[0] ?? '');
     }
 
-    public function testWorkerRejectsAnInvalidInterval(): void
+    public function testWorkerRejectsInvalidOptions(): void
     {
-        foreach (['0', '-1', 'soon'] as $every) {
+        foreach (['batch-size' => '0', 'settle' => '-1', 'poll' => 'soon'] as $option => $value) {
             $tester = $this->command('app:worker');
-            $this->assertSame(Command::INVALID, $tester->execute(['--every' => $every]), $every);
-            $this->assertStringContainsString('--every must be', $tester->getDisplay());
+            $this->assertSame(Command::INVALID, $tester->execute(["--$option" => $value]), $option);
+            $this->assertStringContainsString("--$option must be", $tester->getDisplay());
         }
     }
 
@@ -129,5 +142,36 @@ final class CommandsTest extends KernelTestCase
             $this->assertSame(Command::INVALID, $tester->execute(['--limit-per-domain' => $limit]), $limit);
             $this->assertStringContainsString('--limit-per-domain must be', $tester->getDisplay());
         }
+    }
+
+    public function testCrawlRejectsAnUnknownSite(): void
+    {
+        foreach (['2', 'www.hel.fi'] as $site) {
+            $tester = $this->command('app:crawl');
+            $this->assertSame(Command::INVALID, $tester->execute(['--site' => $site]), $site);
+            $this->assertStringContainsString("No site $site in crawler.yml.", $tester->getDisplay());
+        }
+    }
+
+    public function testQueue(): void
+    {
+        $failing = new RedisQueue($this->redis(), $this->redisPrefix(), maxAttempts: 1);
+        $failing->add('https://nuorten.hel.fi/a', Action::Delete);
+        $batch = $failing->claim(10, 0, 60);
+        $this->assertNotNull($batch);
+        $failing->release($batch, 'Elasticsearch is down.');
+        $this->queue->add('https://nuorten.hel.fi/b', Action::Update);
+
+        $tester = $this->command('app:queue');
+        $this->assertSame(Command::SUCCESS, $tester->execute([]));
+        $display = $tester->getDisplay();
+        $this->assertMatchesRegularExpression('/Waiting\s+1\b/', $display);
+        $this->assertMatchesRegularExpression('/Failed\s+1\b/', $display);
+        $this->assertStringContainsString('https://nuorten.hel.fi/a', $display);
+        $this->assertStringContainsString('Elasticsearch is down.', $display);
+
+        $tester->execute(['--retry-failed' => true]);
+        $this->assertStringContainsString('Queued 1 failed change(s) again.', $tester->getDisplay());
+        $this->assertSame(2, $this->queue->stats()['pending']);
     }
 }

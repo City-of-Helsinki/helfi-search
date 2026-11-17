@@ -6,8 +6,7 @@ namespace App\Webhook;
 
 use App\CrawlerConfigLoader;
 use App\Queue\Action;
-use App\Queue\QueueWriter;
-use App\Queue\Request as QueueRequest;
+use App\Queue\RedisQueue;
 use App\Site;
 use Psr\Log\LoggerInterface;
 use Symfony\Component\HttpFoundation\JsonResponse;
@@ -21,24 +20,24 @@ use Symfony\Component\Routing\Attribute\Route;
  *
  * POST /webhook  Queue a change. Body: {"url": "https://...", "action": "update"|"delete"}.
  *                "action" defaults to "update".
- * GET  /status   Number of changes waiting for the worker.
- * GET  /health   Health check for Docker and OpenShift probes: 200 if the
- *                queue folder is writable and the crawler config readable,
- *                503 if not.
+ * GET  /status   The queue: changes waiting, being processed and failed, and
+ *                the workers seen in the last 15 minutes.
+ * GET  /health   Health check for Docker and OpenShift probes: 200 if Redis
+ *                answers and the crawler config is readable, 503 if not.
  *
  * /webhook and /status require "Authorization: Bearer <token>" (see
  * TokenListener); /health doesn't, and reveals nothing else. Errors are JSON
  * too (see JsonErrorListener).
  *
- * The webhook only writes into the queue folder. It must not depend on
- * anything in App\Worker: the two run as separate, decoupled services. It
- * reads crawler.yml only for the sites to accept.
+ * The webhook only writes into the queue (App\Queue\RedisQueue). It must not
+ * depend on anything in App\Worker: the two run as separate, decoupled
+ * services. It reads crawler.yml only for the sites to accept.
  */
 #[AsController]
 final class WebhookController
 {
     public function __construct(
-        private readonly QueueWriter $queue,
+        private readonly RedisQueue $queue,
         private readonly CrawlerConfigLoader $config,
         private readonly LoggerInterface $logger,
     ) {
@@ -83,7 +82,16 @@ final class WebhookController
             return Json::error(Response::HTTP_UNPROCESSABLE_ENTITY, 'That site is not accepted by this webhook.');
         }
 
-        $this->queue->add(QueueRequest::now($url, $action));
+        try {
+            $this->queue->add($url, $action);
+        } catch (\Throwable $e) {
+            $this->logger->error('Cannot queue {url}: {error}', [
+                'url' => $url,
+                'error' => $e->getMessage(),
+                'exception' => $e,
+            ]);
+            return Json::error(Response::HTTP_SERVICE_UNAVAILABLE, 'The queue is not available; try again later.');
+        }
         $this->logger->info('Queued {action}: {url}', ['action' => $action->value, 'url' => $url]);
 
         return Json::response(['queued' => ['url' => $url, 'action' => $action->value]], Response::HTTP_ACCEPTED);
@@ -92,7 +100,7 @@ final class WebhookController
     #[Route('/status', name: 'status', methods: ['GET'])]
     public function status(): JsonResponse
     {
-        return Json::response(['pending' => $this->queue->pendingCount()]);
+        return Json::response($this->queue->stats());
     }
 
     /**
@@ -101,8 +109,8 @@ final class WebhookController
     #[Route('/health', name: TokenListener::PUBLIC_ROUTE, methods: ['GET'])]
     public function health(): JsonResponse
     {
-        if (!$this->queue->isWritable()) {
-            return Json::response(['status' => 'queue folder not writable'], Response::HTTP_SERVICE_UNAVAILABLE);
+        if (!$this->queue->ping()) {
+            return Json::response(['status' => 'queue not available'], Response::HTTP_SERVICE_UNAVAILABLE);
         }
         // Without the sites nothing can be accepted.
         if ($this->allowedOrigins() === null) {

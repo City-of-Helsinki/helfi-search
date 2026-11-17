@@ -57,6 +57,26 @@ final class CrawlerTest extends TestCase
         $this->assertSame([Process::OUT], array_values(array_unique(array_column($this->output, 0))));
     }
 
+    public function testTicks(): void
+    {
+        $ticks = 0;
+        (new Crawler($this->fakeCrawler(), output: static function (): void {
+        }))->crawl(self::CONFIG, static function () use (&$ticks): void {
+            $ticks++;
+        });
+
+        $this->assertGreaterThan(0, $ticks);
+    }
+
+    public function testATickCanStopTheCrawl(): void
+    {
+        $this->expectExceptionObject(new \LogicException('Stop.'));
+        (new Crawler($this->fakeCrawler(), output: static function (): void {
+        }))->crawl(self::CONFIG, static function (): void {
+            throw new \LogicException('Stop.');
+        });
+    }
+
     public function testRemovesTheTemporaryConfig(): void
     {
         $before = glob(sys_get_temp_dir() . '/crawl-*') ?: [];

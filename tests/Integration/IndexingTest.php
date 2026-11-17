@@ -16,10 +16,12 @@ use App\Pipeline\ChunkAnnotator;
 use App\Pipeline\ContentChunker;
 use App\Pipeline\HtmlCleaner;
 use App\Pipeline\TextPipeline;
-use App\Queue\QueueFolder;
-use App\Queue\Spool;
+use App\Queue\DeletedUrls;
+use App\Queue\RedisClientFactory;
+use App\Queue\RedisQueue;
 use App\Tests\KernelEnvironmentTrait;
 use App\Tests\Unit\CollectingLogger;
+use App\Worker\BatchResult;
 use App\Worker\Crawler;
 use App\Worker\Elasticsearch;
 use App\Worker\Reindexer;
@@ -27,6 +29,7 @@ use GuzzleHttp\Client;
 use GuzzleHttp\RequestOptions;
 use PHPUnit\Framework\Attributes\CoversNothing;
 use PHPUnit\Framework\Attributes\Depends;
+use Predis\ClientInterface;
 use Symfony\Bundle\FrameworkBundle\Test\WebTestCase;
 use Symfony\Component\Filesystem\Filesystem;
 use Symfony\Component\Yaml\Yaml;
@@ -42,7 +45,8 @@ use Symfony\Component\Yaml\Yaml;
  *
  * Uses the crawl settings from config/crawler.yml (and its Elasticsearch
  * connection), with only the site and the indexes replaced: throwaway
- * indexes, deleted afterwards.
+ * indexes, deleted afterwards. The queue is in the compose project's Redis,
+ * under a key prefix of its own.
  */
 #[CoversNothing]
 final class IndexingTest extends WebTestCase
@@ -59,6 +63,8 @@ final class IndexingTest extends WebTestCase
     private static string $configFile;
     private static CrawlerConfig $config;
     private static FakeEmbeddingClient $embeddings;
+    private static ClientInterface $redis;
+    private static string $redisPrefix;
 
     /** What the crawler printed, for failure messages. */
     private static string $crawlerOutput = '';
@@ -84,20 +90,28 @@ final class IndexingTest extends WebTestCase
         $domain['url'] = self::$site->url;
         $project['domains'] = [$domain];
         self::$prefix = 'hel-fi-test-' . bin2hex(random_bytes(4));
-        $project['output_index'] = self::$prefix . '-pages';
         // The crawler refuses to crawl local addresses by default.
         $project['loopback_allowed'] = true;
         self::$configFile = self::$temporary . '/crawler.yml';
         file_put_contents(self::$configFile, Yaml::dump($project, 10, 2));
         self::$config = CrawlerConfig::fromFile(self::$configFile);
-        self::$indexes = new Indexes(self::$prefix, self::$prefix . '-cache');
+        self::$indexes = new Indexes(self::$prefix, self::$prefix . '-cache', self::$prefix . '-pages');
+        $redisUrl = getenv('REDIS_URL');
+        self::$redis = RedisClientFactory::create(
+            is_string($redisUrl) && $redisUrl !== '' ? $redisUrl : 'redis://redis:6379',
+            '',
+            '',
+            '',
+            '',
+            '0',
+        );
+        self::$redisPrefix = self::$prefix . ':';
 
         self::$elasticsearch = new Client([
             'base_uri' => self::$config->elasticsearchUrl(),
             RequestOptions::TIMEOUT => 30,
         ]);
-        (new IndexSetup(self::$indexes, new CollectingLogger()))
-            ->run(Elasticsearch::fromConfig(self::$config), self::$config);
+        (new IndexSetup(self::$indexes, new CollectingLogger()))->run(Elasticsearch::fromConfig(self::$config));
 
         $site = self::$site;
         $site->write('/index.html', $site->page('Front page', 'Welcome to the test site.', links: [
@@ -141,14 +155,24 @@ final class IndexingTest extends WebTestCase
 
     public static function tearDownAfterClass(): void
     {
-        foreach ([self::$prefix . '-v1', self::$prefix . '-pages', self::$prefix . '-cache'] as $index) {
+        foreach ([self::$prefix . '-v1', self::$prefix . '-cache', self::$prefix . '-pages-*'] as $index) {
             self::$elasticsearch->delete("/$index", [RequestOptions::HTTP_ERRORS => false]);
+        }
+        /** @var list<string> $keys */
+        $keys = self::$redis->keys(self::$redisPrefix . '*');
+        if ($keys !== []) {
+            self::$redis->del($keys);
         }
         self::$site->stop();
         (new Filesystem())->remove(self::$temporary);
     }
 
-    private function indexer(): Indexer
+    private function deletedUrls(): DeletedUrls
+    {
+        return new DeletedUrls(self::$redis, self::$redisPrefix);
+    }
+
+    private function indexer(?CollectingLogger $logger = null): Indexer
     {
         $crawler = new Crawler(output: static function (string $type, string $text): void {
             self::$crawlerOutput .= $text;
@@ -160,13 +184,23 @@ final class IndexingTest extends WebTestCase
             new PageProcessor($pipeline),
             self::$embeddings,
             self::$indexes,
-            new CollectingLogger(),
+            $this->deletedUrls(),
+            $logger ?? new CollectingLogger(),
         );
     }
 
-    private function fullCrawl(): void
+    private function fullCrawl(?CollectingLogger $logger = null): void
     {
-        $this->indexer()->crawl(self::$config, self::$config->toArray(), sweep: true);
+        $this->indexer($logger)->crawl(self::$config, self::$config->toArray(), sweep: true);
+        $this->assertSame([], $this->crawlIndexes(), 'The crawl deletes its own index.');
+    }
+
+    /**
+     * @return list<string>
+     */
+    private function crawlIndexes(): array
+    {
+        return Elasticsearch::fromConfig(self::$config)->indexes(self::$indexes->crawlIndexPattern());
     }
 
     /**
@@ -176,8 +210,7 @@ final class IndexingTest extends WebTestCase
      */
     private function queueAndProcess(array $changes): void
     {
-        $queueDir = self::$temporary . '/queue';
-        self::configureKernel($queueDir, self::$configFile, self::TOKEN);
+        self::configureKernel(self::$configFile, self::$redisPrefix, self::TOKEN);
         $client = self::createClient();
         foreach ($changes as $path => $action) {
             $body = json_encode(['url' => self::$site->pageUrl($path), 'action' => $action], JSON_THROW_ON_ERROR);
@@ -186,18 +219,18 @@ final class IndexingTest extends WebTestCase
             ], content: $body);
             $response = $client->getResponse();
             $this->assertSame(202, $response->getStatusCode(), (string) $response->getContent());
-            usleep(10);
         }
 
         $logger = new CollectingLogger();
         $reindexer = new Reindexer(
-            new Spool(new QueueFolder($queueDir), $logger),
+            new RedisQueue(self::$redis, self::$redisPrefix),
             new CrawlerConfigLoader(self::$configFile),
             $logger,
             $this->indexer(),
         );
-        $this->assertTrue(
-            $reindexer->run(),
+        $this->assertSame(
+            BatchResult::Done,
+            $reindexer->run(100, 0, 600),
             implode("\n", $logger->messages('error')) . "\n" . self::$crawlerOutput,
         );
     }
@@ -364,8 +397,10 @@ final class IndexingTest extends WebTestCase
         $this->queueAndProcess(['/page-b.html' => 'delete']);
 
         $this->assertNull($this->document('/page-b.html'));
-        $this->assertNull($this->document('/page-b.html', self::$prefix . '-pages'), "Also from the crawler's index.");
         $this->assertNotNull($this->document('/page-a.html'), 'Other pages stay.');
+        $this->assertArrayHasKey(self::$site->pageUrl('/page-b.html'), $this->deletedUrls()->deletedAt([
+            self::$site->pageUrl('/page-b.html'),
+        ]), 'The deletion is recorded.');
     }
 
     #[Depends('testDeleteThroughTheQueue')]
@@ -397,9 +432,9 @@ final class IndexingTest extends WebTestCase
         $this->assertGreaterThan(1, $this->documentCount(self::$indexes->embeddingCache));
 
         $this->fullCrawl();
+        $this->indexer()->cleanUp(self::$config);
 
         $this->assertNull($this->document('/page-a.html'));
-        $this->assertNull($this->document('/page-a.html', self::$prefix . '-pages'), 'Purged by the crawler.');
         $this->assertNotNull($this->document('/index.html'));
         // Pages B and C were only deleted through the webhook: they're still
         // on the site, so the full crawl indexes them again.
@@ -417,5 +452,65 @@ final class IndexingTest extends WebTestCase
 
         $this->assertNull($this->document('/index.html'));
         $this->assertSame('Page B, back', $this->document('/page-b.html')['label'] ?? null);
+    }
+
+    /**
+     * A crawl that fetched a page before it was deleted doesn't add it back.
+     */
+    #[Depends('testUpdateAndDeleteInOneBatch')]
+    public function testPagesDeletedDuringACrawlStayDeleted(): void
+    {
+        $this->assertNotNull($this->document('/page-c.html'));
+        // As if page C (by its other URL) was deleted after the crawl below
+        // fetched it.
+        $copy = self::$site->pageUrl('/page-c-copy.html');
+        self::$redis->hset(self::$redisPrefix . 'deleted', $copy, (string) (time() + 60));
+
+        $logger = new CollectingLogger();
+        $this->fullCrawl($logger);
+
+        $this->assertNull($this->document('/page-c.html'));
+        $this->assertContains("Skipped $copy: it was deleted after it was crawled.", $logger->messages('info'));
+        self::$redis->hdel(self::$redisPrefix . 'deleted', [$copy]);
+    }
+
+    /**
+     * A full crawl removes only its own sites' pages that are gone.
+     */
+    #[Depends('testPagesDeletedDuringACrawlStayDeleted')]
+    public function testSweepKeepsOtherSites(): void
+    {
+        $other = [
+            'url' => 'https://other.example/',
+            'instance' => 'other.example',
+            'processed_at' => '2020-01-01T00:00:00Z',
+        ];
+        self::$elasticsearch->put('/' . self::$indexes->search . '/_doc/other?refresh=true', [
+            RequestOptions::JSON => $other,
+        ]);
+
+        $this->fullCrawl();
+
+        $this->assertNotNull($this->document('/page-b.html'));
+        $this->assertSame(
+            200,
+            self::$elasticsearch->get('/' . self::$indexes->search . '/_doc/other', [
+                RequestOptions::HTTP_ERRORS => false,
+            ])->getStatusCode(),
+        );
+    }
+
+    public function testCleanUpRemovesAbandonedCrawlIndexes(): void
+    {
+        $abandoned = self::$indexes->crawlPrefix . '-20200101-000000-0123abcd';
+        $recent = self::$indexes->newCrawlIndex();
+        foreach ([$abandoned, $recent] as $index) {
+            self::$elasticsearch->put("/$index");
+        }
+
+        $this->indexer()->cleanUp(self::$config);
+
+        $this->assertSame([$recent], $this->crawlIndexes(), 'One that may still be in use stays.');
+        self::$elasticsearch->delete("/$recent");
     }
 }

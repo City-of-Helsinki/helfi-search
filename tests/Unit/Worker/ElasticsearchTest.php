@@ -156,6 +156,24 @@ final class ElasticsearchTest extends TestCase
         $this->assertSame([], iterator_to_array($this->elasticsearch([new Response(404)])->scan('missing', [])));
     }
 
+    public function testIndexes(): void
+    {
+        $es = $this->elasticsearch([
+            new Response(200, [], '[{"index":"hel-fi-pages-b"},{"index":"hel-fi-pages-a"}]'),
+            new Response(200),
+            new Response(404),
+        ]);
+
+        $this->assertSame(['hel-fi-pages-a', 'hel-fi-pages-b'], $es->indexes('hel-fi-pages-*'));
+        $this->assertSame('/_cat/indices/hel-fi-pages-*', $this->requests[0]->getUri()->getPath());
+        $es->deleteIndex('hel-fi-pages-a');
+        $es->deleteIndex('missing');
+        $this->assertSame(['DELETE', '/hel-fi-pages-a'], [
+            $this->requests[1]->getMethod(),
+            $this->requests[1]->getUri()->getPath(),
+        ]);
+    }
+
     public function testExists(): void
     {
         $es = $this->elasticsearch([new Response(200), new Response(404)]);

@@ -54,7 +54,6 @@ final class CrawlerConfigTest extends TestCase
           - url: https://nuorten.hel.fi
             exclude_tags: [header]
           - url: https://avustukset.hel.fi
-        output_index: hel-fi
         elasticsearch:
           host: http://crawler-elastic/
           port: 9200
@@ -66,7 +65,7 @@ final class CrawlerConfigTest extends TestCase
         $config = CrawlerConfig::fromFile(dirname(__DIR__, 2) . '/config/crawler.yml');
 
         $this->assertNotEmpty($config->sites());
-        $this->assertSame('hel-fi-pages', $config->index());
+        $this->assertArrayNotHasKey('output_index', $config->toArray(), 'Each crawl has an index of its own.');
     }
 
     public function testSites(): void
@@ -93,12 +92,11 @@ final class CrawlerConfigTest extends TestCase
 
         $this->assertSame('http://crawler-elastic:9200', $config->elasticsearchUrl());
         $this->assertSame([], $config->elasticsearchCredentials());
-        $this->assertSame('hel-fi', $config->index());
     }
 
     public function testElasticsearchDefaults(): void
     {
-        $config = $this->config("domains:\n  - url: https://nuorten.hel.fi\noutput_index: x\n");
+        $config = $this->config("domains:\n  - url: https://nuorten.hel.fi\n");
 
         $this->assertSame('http://localhost:9200', $config->elasticsearchUrl());
     }
@@ -163,7 +161,7 @@ final class CrawlerConfigTest extends TestCase
     {
         $this->expectException(\RuntimeException::class);
         $this->expectExceptionMessage('needs a url');
-        $this->config("domains:\n  - exclude_tags: [header]\noutput_index: hel-fi\n");
+        $this->config("domains:\n  - exclude_tags: [header]\n");
     }
 
     public function testElasticsearchMustBeAMapping(): void
@@ -186,13 +184,6 @@ final class CrawlerConfigTest extends TestCase
     {
         $this->expectException(\RuntimeException::class);
         $this->expectExceptionMessage('No domains configured');
-        $this->config("output_index: hel-fi\n");
-    }
-
-    public function testNoIndex(): void
-    {
-        $this->expectException(\RuntimeException::class);
-        $this->expectExceptionMessage('output_index is not set.');
-        $this->config("domains:\n  - url: https://nuorten.hel.fi\n")->index();
+        $this->config("max_crawl_depth: 2\n");
     }
 }

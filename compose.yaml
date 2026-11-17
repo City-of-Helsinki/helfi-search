@@ -5,7 +5,8 @@ name: helfi-search
 # (it creates the external stonehenge-network).
 #
 # Only the webhook joins stonehenge-network, which other projects share.
-# Everything else stays on the project's own network.
+# Everything else stays on the project's own networks: "queue" for Redis,
+# "internal" for Elasticsearch.
 
 services:
   # Only the crawler and the worker use it, over the internal network. To
@@ -32,6 +33,21 @@ services:
       retries: 60
     networks:
       - internal
+
+  # The queue between the webhook and the workers (src/Queue/RedisQueue.php).
+  # On OpenShift, a Sentinel setup: see REDIS_SENTINELS in README.md.
+  redis:
+    image: redis:7.4-alpine
+    command: ["redis-server", "--appendonly", "yes"]
+    volumes:
+      - redis_data:/data
+    healthcheck:
+      test: ["CMD", "redis-cli", "ping"]
+      interval: 1s
+      timeout: 1s
+      retries: 30
+    networks:
+      - queue
 
   # Creates the indexes that are missing (bin/console app:setup), then exits.
   setup:
@@ -64,9 +80,6 @@ services:
   # user (LOCAL_UID in .env, set by make setup) in group 0, so they can write
   # vendor/ into the project folder. The production images are built with
   # docker/openshift/*/Dockerfile.
-  #
-  # The queue folder is var/queue in the project folder (ignored by git), next
-  # to Symfony's cache (var/cache).
 
   # Full crawl. Locally limited to about CRAWL_LIMIT_PER_DOMAIN URLs per site
   # (default 50) to keep development fast; set it to 0 for a complete crawl.
@@ -91,17 +104,19 @@ services:
       - .:/app:delegated
     networks:
       - internal
+      - queue
     depends_on:
       crawler-elastic:
+        condition: service_healthy
+      redis:
         condition: service_healthy
       setup:
         condition: service_completed_successfully
 
-  # Receives content update notifications and writes them into the queue
-  # folder. It never talks to the crawler or Elasticsearch: the queue folder is
-  # the only thing it shares with the worker at runtime (the file format is in
-  # src/Queue/QueueFolder.php). It reads config/crawler.yml only for the list of
-  # sites to accept.
+  # Receives content update notifications and adds them to the queue in Redis.
+  # It never talks to the crawler or Elasticsearch: the queue is the only thing
+  # it shares with the workers. It reads config/crawler.yml only for the list
+  # of sites to accept.
   webhook:
     build:
       context: .
@@ -118,6 +133,10 @@ services:
       - .:/app:delegated
     networks:
       - stonehenge-network
+      - queue
+    depends_on:
+      redis:
+        condition: service_healthy
     labels:
       - "traefik.enable=true"
       - "traefik.http.routers.helfi-search-webhook.entrypoints=https"
@@ -126,11 +145,9 @@ services:
       - "traefik.http.services.helfi-search-webhook.loadbalancer.server.port=8080"
       - "traefik.docker.network=stonehenge-network"
 
-  # Applies the queued changes every 30 minutes.
-  #
-  # Compose has no scheduler, so here the worker loops by itself (--every).
-  # On OpenShift it runs as a CronJob instead: the production image's default
-  # command processes the queue once and exits.
+  # Applies the queued changes as they come, once a URL has had no new changes
+  # for 30 seconds (--settle). Two replicas, as on OpenShift: they share the
+  # queue safely. See bin/console app:worker --help.
   worker:
     build:
       context: .
@@ -144,21 +161,33 @@ services:
       APP_ENV: dev
       OPENAI_API_KEY: ${OPENAI_API_KEY:-}
       OPENAI_BASE_URL: ${OPENAI_BASE_URL:-https://api.openai.com/v1}
-    command: ["php", "/app/bin/console", "app:worker", "--every=1800"]
+    command: ["php", "/app/bin/console", "app:worker"]
+    deploy:
+      replicas: 2
+    # The worker touches this file while it works or waits.
+    healthcheck:
+      test: ["CMD-SHELL", "find /tmp/worker-alive -mmin -15 | grep -q ."]
+      interval: 30s
+      start_period: 30s
     volumes:
       - .:/app:delegated
     networks:
       - internal
+      - queue
     depends_on:
       crawler-elastic:
+        condition: service_healthy
+      redis:
         condition: service_healthy
       setup:
         condition: service_completed_successfully
 
 networks:
   internal:
+  queue:
   stonehenge-network:
     external: true
 
 volumes:
   elastic_data:
+  redis_data:

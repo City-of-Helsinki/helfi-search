@@ -8,7 +8,7 @@ use Symfony\Component\Yaml\Yaml;
 
 /**
  * Read access to config/crawler.yml (see CrawlerConfigLoader): the crawled
- * sites, the index and the Elasticsearch connection.
+ * sites and the Elasticsearch connection.
  *
  * Shared by the webhook (which sites to accept) and the worker (how to crawl
  * them), so the list of sites lives in one place.
@@ -161,19 +161,6 @@ final class CrawlerConfig
         }
 
         return [];
-    }
-
-    /**
-     * @throws \RuntimeException If output_index is missing.
-     */
-    public function index(): string
-    {
-        $index = $this->config['output_index'] ?? null;
-        if (!is_string($index) || $index === '') {
-            throw new \RuntimeException('output_index is not set.');
-        }
-
-        return $index;
     }
 
     /**

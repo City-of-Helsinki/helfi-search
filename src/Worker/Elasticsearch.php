@@ -122,6 +122,34 @@ final class Elasticsearch
     }
 
     /**
+     * The names of the indexes that match a pattern, e.g. "hel-fi-pages-*".
+     *
+     * @return list<string>
+     */
+    public function indexes(string $pattern): array
+    {
+        $result = $this->request('GET', "/_cat/indices/$pattern", query: ['format' => 'json', 'h' => 'index']);
+
+        $names = [];
+        foreach ($result ?? [] as $row) {
+            if (is_array($row) && is_string($row['index'] ?? null)) {
+                $names[] = $row['index'];
+            }
+        }
+        sort($names);
+
+        return $names;
+    }
+
+    /**
+     * Deletes an index, if it exists.
+     */
+    public function deleteIndex(string $index): void
+    {
+        $this->request('DELETE', "/$index", allowed: [404]);
+    }
+
+    /**
      * Makes recent writes visible to searches.
      */
     public function refresh(string $index): void
