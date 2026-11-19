@@ -7,8 +7,7 @@ namespace App\Indexer;
 use App\Embedding\EmbeddingModel;
 
 /**
- * The indexes the worker writes, besides the crawler's own (output_index in
- * crawler.yml: the crawled pages with their HTML).
+ * The indexes the worker writes, and the crawler's temporary ones.
  *
  * Configured in config/services.yaml.
  */
@@ -18,11 +17,51 @@ final readonly class Indexes
      * @param string $search The search index: an alias, see
      *   searchIndexVersion().
      * @param string $embeddingCache Chunk vectors by content hash.
+     * @param string $crawlPrefix The start of the crawls' own indexes: see
+     *   newCrawlIndex().
      */
     public function __construct(
         public string $search,
         public string $embeddingCache,
+        public string $crawlPrefix,
     ) {
+    }
+
+    /**
+     * A new name for a crawl's own index, e.g.
+     * "hel-fi-pages-20261117-120000-1a2b3c4d".
+     *
+     * Every crawl writes the pages it fetches (with their HTML) into an index
+     * of its own, which is processed and deleted when the crawl ends. So
+     * crawls running at the same time each process exactly their own pages.
+     */
+    public function newCrawlIndex(): string
+    {
+        return sprintf('%s-%s-%s', $this->crawlPrefix, gmdate('Ymd-His'), bin2hex(random_bytes(4)));
+    }
+
+    /**
+     * A pattern that matches every crawl index.
+     */
+    public function crawlIndexPattern(): string
+    {
+        return "$this->crawlPrefix-*";
+    }
+
+    /**
+     * When the crawl index was created, as a Unix time, from its name.
+     *
+     * @return int|null NULL if it's not a crawl index.
+     */
+    public function crawlIndexCreated(string $index): ?int
+    {
+        $pattern = '/^' . preg_quote($this->crawlPrefix, '/') . '-(\d{8}-\d{6})-[0-9a-f]{8}$/';
+        if (!preg_match($pattern, $index, $matches)) {
+            return null;
+        }
+        $time = \DateTimeImmutable::createFromFormat('!Ymd-His', $matches[1], new \DateTimeZone('UTC'));
+
+        return $time === false ? null : $time->getTimestamp();
     }
 
     /**
@@ -36,12 +75,12 @@ final readonly class Indexes
     }
 
     /**
-     * The crawler's index: only URLs and crawl times are searchable; the
-     * rest (title, full_html, ...) is just stored for the worker.
+     * A crawl index: only URLs and crawl times are searchable; the rest
+     * (title, full_html, ...) is just stored for the worker.
      *
      * @return array<mixed>
      */
-    public static function pagesMapping(): array
+    public static function crawlMapping(): array
     {
         return [
             'mappings' => [

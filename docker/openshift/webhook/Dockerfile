@@ -1,5 +1,5 @@
-# The webhook's OpenShift image: receives change notifications and writes them
-# into the queue folder. Build from the repository root:
+# The webhook's OpenShift image: receives change notifications and adds them
+# to the queue in Redis. Build from the repository root:
 #
 #   docker build -f docker/openshift/webhook/Dockerfile .
 #
@@ -28,12 +28,8 @@ COPY public /app/public
 COPY bin /app/bin
 COPY config /app/config
 # Symfony's cache (var/cache) is built here, so it ships with the image;
-# group 0 may update it. var/queue is the queue folder, where OpenShift mounts
-# the shared volume. For when no volume is mounted: writable by group 0, new
-# entries inherit the group.
+# group 0 may update it.
 RUN php /app/bin/console cache:warmup \
-    && mkdir -p /app/var/queue \
     && chgrp -R 0 /app/var \
-    && chmod -R g=u /app/var/cache \
-    && chmod 2775 /app/var/queue
+    && chmod -R g=u /app/var/cache
 USER 1001

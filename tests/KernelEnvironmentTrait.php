@@ -9,8 +9,9 @@ use Monolog\Logger;
 use Symfony\Bundle\FrameworkBundle\Test\KernelTestCase;
 
 /**
- * Points the test kernel at temporary files, for KernelTestCase and
- * WebTestCase tests. See when@test in config/services.yaml.
+ * Points the test kernel at a temporary crawler.yml and the test's own Redis
+ * keys, for KernelTestCase and WebTestCase tests. See when@test in
+ * config/services.yaml.
  *
  * @phpstan-require-extends KernelTestCase
  */
@@ -19,21 +20,31 @@ trait KernelEnvironmentTrait
     /**
      * Sets the environment for the kernels booted after this.
      *
-     * @param string $queueDir The queue folder.
      * @param string $crawlerConfig The crawler.yml to read.
+     * @param string $redisPrefix The Redis key prefix: see RedisTrait.
      * @param string $token The webhook token; empty means none.
+     * @param string|null $redisUrl Another Redis, e.g. one that's down.
      */
-    protected static function configureKernel(string $queueDir, string $crawlerConfig, string $token = ''): void
-    {
+    protected static function configureKernel(
+        string $crawlerConfig,
+        string $redisPrefix,
+        string $token = '',
+        ?string $redisUrl = null,
+    ): void {
         self::ensureKernelShutdown();
 
         $variables = [
-            'TEST_QUEUE_DIR' => $queueDir,
             'TEST_CRAWLER_CONFIG' => $crawlerConfig,
+            'REDIS_PREFIX' => $redisPrefix,
             // Takes precedence over WEBHOOK_TOKEN in the container's real
             // environment.
             'WEBHOOK_TOKEN' => $token,
         ];
+        if ($redisUrl !== null) {
+            $variables['REDIS_URL'] = $redisUrl;
+        } else {
+            unset($_ENV['REDIS_URL'], $_SERVER['REDIS_URL']);
+        }
         foreach ($variables as $name => $value) {
             $_ENV[$name] = $_SERVER[$name] = $value;
         }

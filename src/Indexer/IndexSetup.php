@@ -4,7 +4,6 @@ declare(strict_types=1);
 
 namespace App\Indexer;
 
-use App\CrawlerConfig;
 use App\Worker\Elasticsearch;
 use Psr\Log\LoggerInterface;
 
@@ -22,9 +21,8 @@ final readonly class IndexSetup
     /**
      * @throws \RuntimeException If an index can't be created.
      */
-    public function run(Elasticsearch $elasticsearch, CrawlerConfig $config): void
+    public function run(Elasticsearch $elasticsearch): void
     {
-        $this->create($elasticsearch, $config->index(), Indexes::pagesMapping());
         $this->create($elasticsearch, $this->indexes->embeddingCache, Indexes::embeddingCacheMapping());
 
         $alias = $this->indexes->search;

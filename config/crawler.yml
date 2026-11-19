@@ -14,9 +14,9 @@
 ##   They are separated to allow for domain-specific configurations.
 #
 # The crawler only fetches the pages: it stores each page's HTML
-# (full_html_extraction_enabled) in output_index, and the worker turns it into
-# the search index (src/Indexer/). What's indexed from a page (the content,
-# title, language, content type) is decided there, not here.
+# (full_html_extraction_enabled) in an index of the crawl's own, and the worker
+# turns it into the search index (src/Indexer/). What's indexed from a page (the
+# content, title, language, content type) is decided there, not here.
 domains:
   - url: https://nuorten.hel.fi
   - url: https://avustukset.hel.fi
@@ -68,8 +68,9 @@ domains:
 output_sink: elasticsearch
 #
 ## Elasticsearch index name to ingest crawl results into. Required if output_sink is elasticsearch
-## The crawled pages, read by the worker; created by bin/console app:setup.
-output_index: hel-fi-pages
+## Not set here: every crawl writes into an index of its own (hel-fi-pages-*),
+## which the worker processes and deletes. See src/Indexer/Indexes.php.
+#output_index: hel-fi-pages
 #
 ## Local directory to output crawl results. The defult value is ./crawled_docs
 ##   This will appear at the top level of your Open Crawler directory if running from source,
@@ -84,7 +85,9 @@ output_index: hel-fi-pages
 #max_extracted_links_count: 1000
 #
 ## Whether or not the Open Crawler should purge outdated documents after completing a crawl. Defaults to true
-#purge_crawl_enabled: true
+## Nothing to purge in a crawl's own index: the worker removes the pages a
+## full crawl didn't find from the search index.
+purge_crawl_enabled: false
 #
 ## Whether or not to include the full HTML in the crawl result Enabling full HTML extraction can
 ##   dramatically increase the index size if the site being crawled is large. Defaults to false.

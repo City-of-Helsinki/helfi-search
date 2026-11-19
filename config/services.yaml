@@ -2,17 +2,26 @@ parameters:
     # Read on every request and every worker run, so edits apply without a
     # restart. See src/CrawlerConfig.php.
     app.crawler_config: '%kernel.project_dir%/config/crawler.yml'
-    # The queue folder shared by the webhook and the worker: the shared volume
-    # is mounted here on OpenShift. See src/Queue/QueueFolder.php.
-    app.queue_dir: '%kernel.project_dir%/var/queue'
+    # The queue, shared by the webhook and the workers: one Redis server
+    # (REDIS_URL) or a Sentinel setup (REDIS_SENTINELS). See
+    # src/Queue/RedisClientFactory.php and src/Queue/RedisQueue.php.
+    env(REDIS_URL): 'redis://redis:6379'
+    env(REDIS_SENTINELS): ''
+    env(REDIS_SENTINEL_SERVICE): ''
+    env(REDIS_PASSWORD): ''
+    env(REDIS_SENTINEL_PASSWORD): ''
+    env(REDIS_DB): '0'
+    # Prepended to every key, so a shared Redis is safe.
+    env(REDIS_PREFIX): 'helfi-search:'
     # The webhook's shared secret. Every request but /health is refused if it's
     # empty.
     env(WEBHOOK_TOKEN): ''
     env(APP_SECRET): ''
-    # The search index (an alias) and the embedding cache. The crawler's own
-    # index is output_index in crawler.yml. See src/Indexer/Indexes.php.
+    # The search index (an alias), the embedding cache, and the start of the
+    # names of the crawls' own indexes. See src/Indexer/Indexes.php.
     app.search_index: hel-fi
     app.embedding_cache_index: hel-fi-embedding-cache
+    app.crawl_index_prefix: hel-fi-pages
     # The embeddings API. Without a key, development uses made-up vectors.
     # See src/Embedding/OpenAiEmbeddingClient.php.
     env(OPENAI_API_KEY): ''
@@ -45,8 +54,8 @@ services:
             # Values, not services.
             - '../src/CrawlerConfig.php'
             - '../src/Site.php'
-            - '../src/Queue/Action.php'
-            - '../src/Queue/Request.php'
+            - '../src/Queue/{Action,Batch}.php'
+            - '../src/Worker/{BatchResult,Lease,Stopped}.php'
             - '../src/Pipeline/{Chunk,Document,Heading,HeadingFragment,PipelineException,Text}.php'
             - '../src/Embedding/{EmbeddingException,EmbeddingModel,Vector}.php'
             - '../src/Indexer/{Page,PageMetadata,ProcessedPage}.php'
@@ -60,8 +69,15 @@ services:
     App\CrawlerConfigLoader:
         arguments: ['%app.crawler_config%']
 
-    App\Queue\QueueFolder:
-        arguments: ['%app.queue_dir%']
+    Predis\ClientInterface:
+        factory: ['App\Queue\RedisClientFactory', 'create']
+        arguments:
+            $url: '%env(REDIS_URL)%'
+            $sentinels: '%env(REDIS_SENTINELS)%'
+            $sentinelService: '%env(REDIS_SENTINEL_SERVICE)%'
+            $password: '%env(REDIS_PASSWORD)%'
+            $sentinelPassword: '%env(REDIS_SENTINEL_PASSWORD)%'
+            $database: '%env(REDIS_DB)%'
 
     App\Embedding\EmbeddingClient:
         factory: ['App\Embedding\EmbeddingClientFactory', 'create']
@@ -71,7 +87,7 @@ services:
             $environment: '%kernel.environment%'
 
     App\Indexer\Indexes:
-        arguments: ['%app.search_index%', '%app.embedding_cache_index%']
+        arguments: ['%app.search_index%', '%app.embedding_cache_index%', '%app.crawl_index_prefix%']
 
     App\Webhook\TokenListener:
         arguments:
@@ -84,6 +100,6 @@ when@test:
             class: App\Embedding\FakeEmbeddingClient
 
     parameters:
-        # Tests point these at temporary files: see tests/KernelEnvironmentTrait.php.
+        # Tests point this at a temporary file, and REDIS_PREFIX at their own
+        # keys: see tests/KernelEnvironmentTrait.php.
         app.crawler_config: '%env(TEST_CRAWLER_CONFIG)%'
-        app.queue_dir: '%env(TEST_QUEUE_DIR)%'

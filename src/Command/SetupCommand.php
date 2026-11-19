@@ -27,9 +27,9 @@ final class SetupCommand extends Command
     protected function configure(): void
     {
         $this->setHelp(<<<'HELP'
-            Creates the crawler's index (output_index in crawler.yml), the embedding
-            cache and the search index with its alias, if they don't exist. Existing
-            indexes are left as they are. Safe to run on every deployment.
+            Creates the embedding cache and the search index with its alias, if they
+            don't exist. Existing indexes are left as they are. Safe to run on every
+            deployment. (Each crawl creates and deletes an index of its own.)
             HELP);
     }
 
@@ -39,7 +39,7 @@ final class SetupCommand extends Command
             $config = $this->config->load();
             $elasticsearch = Elasticsearch::fromConfig($config);
             $elasticsearch->waitUntilReady();
-            $this->setup->run($elasticsearch, $config);
+            $this->setup->run($elasticsearch);
         } catch (\Throwable $e) {
             $this->logger->error('{error}', ['error' => $e->getMessage(), 'exception' => $e]);
             return self::FAILURE;

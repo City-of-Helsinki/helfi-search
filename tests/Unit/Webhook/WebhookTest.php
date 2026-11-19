@@ -7,12 +7,11 @@ namespace App\Tests\Unit\Webhook;
 use App\CrawlerConfig;
 use App\CrawlerConfigLoader;
 use App\Kernel;
-use App\Queue\Action;
-use App\Queue\QueueFolder;
-use App\Queue\QueueWriter;
-use App\Queue\Request as QueueRequest;
+use App\Queue\RedisClientFactory;
+use App\Queue\RedisQueue;
 use App\Site;
 use App\Tests\KernelEnvironmentTrait;
+use App\Tests\RedisTrait;
 use App\Tests\Unit\TemporaryDirectoryTrait;
 use App\Webhook\Json;
 use App\Webhook\JsonErrorListener;
@@ -34,14 +33,14 @@ use Symfony\Component\HttpFoundation\Response;
 #[UsesClass(Kernel::class)]
 #[UsesClass(CrawlerConfig::class)]
 #[UsesClass(CrawlerConfigLoader::class)]
-#[UsesClass(QueueWriter::class)]
-#[UsesClass(QueueFolder::class)]
-#[UsesClass(QueueRequest::class)]
+#[UsesClass(RedisClientFactory::class)]
+#[UsesClass(RedisQueue::class)]
 #[UsesClass(Site::class)]
 final class WebhookTest extends WebTestCase
 {
     use TemporaryDirectoryTrait;
     use KernelEnvironmentTrait;
+    use RedisTrait;
 
     private const string TOKEN = 'test-token';
 
@@ -49,15 +48,15 @@ final class WebhookTest extends WebTestCase
         domains:
           - url: https://nuorten.hel.fi
           - url: https://avustukset.hel.fi
-        output_index: hel-fi
         YAML;
 
-    private QueueFolder $folder;
     private string $configFile;
+
+    /** Another Redis for the kernel, e.g. one that's down. */
+    private ?string $redisUrl = null;
 
     protected function setUp(): void
     {
-        $this->folder = new QueueFolder($this->temporaryDirectory() . '/queue');
         $this->configFile = $this->temporaryDirectory() . '/crawler.yml';
         file_put_contents($this->configFile, self::CONFIG);
     }
@@ -73,7 +72,7 @@ final class WebhookTest extends WebTestCase
         ?string $token = self::TOKEN,
         string $configuredToken = self::TOKEN,
     ): array {
-        self::configureKernel($this->temporaryDirectory() . '/queue', $this->configFile, $configuredToken);
+        self::configureKernel($this->configFile, $this->redisPrefix(), $configuredToken, $this->redisUrl);
         $client = self::createClient();
         $server = $token === null ? [] : ['HTTP_AUTHORIZATION' => "Bearer $token"];
         $client->request($method, $path, server: $server, content: $body);
@@ -90,18 +89,20 @@ final class WebhookTest extends WebTestCase
     }
 
     /**
-     * @return list<QueueRequest>
+     * @return array<string, string> The queued action per URL.
      */
     private function queued(): array
     {
-        $files = glob($this->folder->incoming . '/' . QueueFolder::REQUEST_FILES) ?: [];
-        sort($files);
+        $queued = [];
+        foreach ($this->redis()->hgetall($this->redisPrefix() . 'pending') as $url => $json) {
+            $this->assertIsString($json);
+            $change = json_decode($json, true);
+            $this->assertIsArray($change);
+            $this->assertIsString($change['action'] ?? null);
+            $queued[(string) $url] = $change['action'];
+        }
 
-        return array_map(
-            fn (string $file): QueueRequest => QueueRequest::fromJson((string) file_get_contents($file))
-                ?? throw new \RuntimeException("Unreadable request file $file."),
-            $files,
-        );
+        return $queued;
     }
 
     public function testQueuesAnUpdate(): void
@@ -110,10 +111,7 @@ final class WebhookTest extends WebTestCase
 
         $this->assertSame(Response::HTTP_ACCEPTED, $status);
         $this->assertSame(['queued' => ['url' => 'https://nuorten.hel.fi/opiskelu/', 'action' => 'update']], $body);
-        $queued = $this->queued();
-        $this->assertCount(1, $queued);
-        $this->assertSame('https://nuorten.hel.fi/opiskelu/', $queued[0]->url);
-        $this->assertSame(Action::Update, $queued[0]->action);
+        $this->assertSame(['https://nuorten.hel.fi/opiskelu/' => 'update'], $this->queued());
         $this->assertSame(['Queued update: https://nuorten.hel.fi/opiskelu/'], self::loggedMessages('info'));
     }
 
@@ -122,7 +120,7 @@ final class WebhookTest extends WebTestCase
         [$status] = $this->send('POST', '/webhook', '{"url":"https://avustukset.hel.fi/fi/x","action":"delete"}');
 
         $this->assertSame(Response::HTTP_ACCEPTED, $status);
-        $this->assertSame(Action::Delete, $this->queued()[0]->action);
+        $this->assertSame(['https://avustukset.hel.fi/fi/x' => 'delete'], $this->queued());
     }
 
     public function testDropsTheFragment(): void
@@ -194,10 +192,14 @@ final class WebhookTest extends WebTestCase
     public function testStatus(): void
     {
         $this->send('POST', '/webhook', '{"url":"https://nuorten.hel.fi/a/"}');
-        usleep(10);
-        $this->send('POST', '/webhook', '{"url":"https://nuorten.hel.fi/a/"}');
+        $this->send('POST', '/webhook', '{"url":"https://nuorten.hel.fi/a/","action":"delete"}');
+        $this->send('POST', '/webhook', '{"url":"https://nuorten.hel.fi/b/"}');
 
-        $this->assertSame([200, ['pending' => 2]], $this->send('GET', '/status'));
+        $this->assertSame(
+            [200, ['pending' => 2, 'processing' => 0, 'batches' => 0, 'failed' => 0, 'workers' => []]],
+            $this->send('GET', '/status'),
+            'One change per URL.',
+        );
     }
 
     public function testHealth(): void
@@ -207,11 +209,15 @@ final class WebhookTest extends WebTestCase
         $this->assertSame([405, ['error' => 'Use GET.']], $this->send('POST', '/health', token: null));
     }
 
-    public function testHealthFailsWhenTheQueueIsNotWritable(): void
+    public function testRedisDown(): void
     {
-        chmod($this->temporaryDirectory(), 0555);
+        $this->redisUrl = 'redis://127.0.0.1:1';
 
-        $this->assertSame(503, $this->send('GET', '/health', token: null)[0]);
+        $this->assertSame([503, ['status' => 'queue not available']], $this->send('GET', '/health', token: null));
+        [$status, $body] = $this->send('POST', '/webhook', '{"url":"https://nuorten.hel.fi/"}');
+        $this->assertSame(503, $status);
+        $this->assertSame('The queue is not available; try again later.', $body['error']);
+        $this->assertStringStartsWith('Cannot queue https://nuorten.hel.fi/: ', self::loggedMessages('error')[0] ?? '');
     }
 
     public function testUnreadableCrawlerConfig(): void

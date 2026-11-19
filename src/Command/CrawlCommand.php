@@ -4,8 +4,10 @@ declare(strict_types=1);
 
 namespace App\Command;
 
+use App\CrawlerConfig;
 use App\CrawlerConfigLoader;
 use App\Indexer\IndexerInterface;
+use App\Queue\RedisQueue;
 use App\Worker\Elasticsearch;
 use Psr\Log\LoggerInterface;
 use Symfony\Component\Console\Attribute\AsCommand;
@@ -14,12 +16,16 @@ use Symfony\Component\Console\Input\InputInterface;
 use Symfony\Component\Console\Input\InputOption;
 use Symfony\Component\Console\Output\OutputInterface;
 
-#[AsCommand(name: 'app:crawl', description: 'Crawls every site in crawler.yml')]
+#[AsCommand(name: 'app:crawl', description: 'Crawls every page of the sites in crawler.yml')]
 final class CrawlCommand extends Command
 {
+    /** How often the clean-up after full crawls runs at most. */
+    private const int CLEAN_UP_INTERVAL = 20 * 3600;
+
     public function __construct(
         private readonly CrawlerConfigLoader $config,
         private readonly IndexerInterface $indexer,
+        private readonly RedisQueue $queue,
         private readonly LoggerInterface $logger,
     ) {
         parent::__construct();
@@ -29,6 +35,12 @@ final class CrawlCommand extends Command
     {
         $this
             ->addOption(
+                'site',
+                null,
+                InputOption::VALUE_REQUIRED,
+                'Crawl only this site: its host, or its position in crawler.yml (0 is the first)',
+            )
+            ->addOption(
                 'limit-per-domain',
                 null,
                 InputOption::VALUE_REQUIRED,
@@ -36,18 +48,23 @@ final class CrawlCommand extends Command
                 '0',
             )
             ->setHelp(<<<'HELP'
-                By default, runs one crawl with crawler.yml as is: every page of every
-                site, processed into the search index. Then removes the pages that are
-                gone, from the crawler's index and the search index.
+                By default, runs one crawl of every page of every site in crawler.yml,
+                processed into the search index. Then removes the pages it didn't find
+                from the search index.
 
-                With <info>--limit-per-domain</info>, runs one crawl per site, without the
-                purge step. The crawler counts every URL it handles toward the limit,
-                including redirects and non-HTML files, so a site gets at most that many
-                documents, usually fewer.
+                With <info>--site</info>, crawls only that site, and removes only its pages
+                that are gone. Crawls of different sites can run at the same time, e.g. as
+                an indexed Job: <info>--site=$(JOB_COMPLETION_INDEX)</info>.
 
-                Limited crawls don't remove anything: that would delete every page the
-                crawl didn't visit, including the other sites and every page past the
-                limit. Pages from earlier crawls stay in the indexes.
+                After a complete crawl, the first crawl to finish in about a day cleans up:
+                it removes the vectors no page uses, old deletion records and the indexes
+                of crawls that crashed.
+
+                With <info>--limit-per-domain</info>, runs one crawl per site. The crawler
+                counts every URL it handles toward the limit, including redirects and
+                non-HTML files, so a site gets at most that many documents, usually fewer.
+                Limited crawls don't remove anything: that would delete every page past the
+                limit. Pages from earlier crawls stay in the index.
                 HELP);
     }
 
@@ -64,24 +81,36 @@ final class CrawlCommand extends Command
 
         try {
             $config = $this->config->load();
-            Elasticsearch::fromConfig($config)->waitUntilReady();
             $settings = $config->toArray();
+            $domains = $config->domains();
+
+            $site = $input->getOption('site');
+            if (is_string($site)) {
+                $domain = $this->findSite($config, $site);
+                if ($domain === null) {
+                    $output->writeln("<error>No site $site in crawler.yml.</error>");
+                    return self::INVALID;
+                }
+                $domains = [$domain => $domains[$domain]];
+            }
+
+            Elasticsearch::fromConfig($config)->waitUntilReady();
 
             if ($limit === 0) {
-                $this->logger->info('Crawling all sites.');
-                $this->indexer->crawl($config, $settings, sweep: true);
+                $this->logger->info('Crawling {sites}.', ['sites' => implode(', ', array_keys($domains))]);
+                $this->indexer->crawl($config, ['domains' => array_values($domains)] + $settings, sweep: true);
+
+                if ($this->queue->onceEvery('clean-up', self::CLEAN_UP_INTERVAL)) {
+                    $this->indexer->cleanUp($config);
+                }
                 return self::SUCCESS;
             }
 
-            foreach ($config->domains() as $domain) {
-                $this->logger->info('Crawling at most {limit} URLs of {site}.', [
-                    'limit' => $limit,
-                    'site' => $domain['url'],
-                ]);
+            foreach ($domains as $url => $domain) {
+                $this->logger->info('Crawling at most {limit} URLs of {site}.', ['limit' => $limit, 'site' => $url]);
                 $this->indexer->crawl($config, [
                     'domains' => [$domain],
                     'max_unique_url_count' => $limit,
-                    'purge_crawl_enabled' => false,
                 ] + $settings, sweep: false);
             }
         } catch (\Throwable $e) {
@@ -90,5 +119,23 @@ final class CrawlCommand extends Command
         }
 
         return self::SUCCESS;
+    }
+
+    /**
+     * The site's URL in crawler.yml, by its host or position.
+     */
+    private function findSite(CrawlerConfig $config, string $site): ?string
+    {
+        $sites = $config->sites();
+        if (ctype_digit($site)) {
+            return $sites[(int) $site] ?? null;
+        }
+        foreach ($sites as $url) {
+            if (strcasecmp((string) parse_url($url, PHP_URL_HOST), $site) === 0) {
+                return $url;
+            }
+        }
+
+        return null;
     }
 }

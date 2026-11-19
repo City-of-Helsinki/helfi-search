@@ -45,7 +45,7 @@ down: ## Stop and remove the containers (keeps the index)
 	$(COMPOSE) down
 
 PHONY += restart-worker
-restart-worker: ## Restart the looping worker, e.g. after code changes
+restart-worker: ## Restart the workers, e.g. after code changes
 	$(COMPOSE) restart worker
 
 PHONY += crawl
@@ -57,9 +57,12 @@ crawl-all: ## Full crawl of every page
 	$(MAKE) crawl LIMIT=0
 
 PHONY += process-queue
-process-queue: ## Process the queue now instead of waiting for the worker
-	$(COMPOSE) stop worker
-	$(COMPOSE) run --rm worker php /app/bin/console app:worker; status=$$?; $(COMPOSE) start worker; exit $$status
+process-queue: ## Process the queue now, without waiting for changes to settle
+	$(COMPOSE) run --rm worker php /app/bin/console app:worker --once --settle=0
+
+PHONY += queue
+queue: ## Show the queue and its failed changes
+	$(COMPOSE) exec webhook php bin/console app:queue
 
 PHONY += search
 search: ## Show the indexed documents

@@ -5,7 +5,7 @@
 # Composer dependencies; installed during the image builds.
 /vendor/
 
-# Local runtime data (the queue folder).
+# Symfony's cache and logs.
 /var/
 
 # PHPUnit's cache.

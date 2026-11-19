@@ -1,6 +1,6 @@
 # The worker's OpenShift image: applies the queued changes (app:worker, the
-# default command) and runs full crawls (app:crawl). Build from the repository
-# root:
+# default command, which keeps running) and runs full crawls (app:crawl).
+# Build from the repository root:
 #
 #   docker build -f docker/openshift/worker/Dockerfile .
 #
@@ -27,12 +27,10 @@ USER root
 COPY --from=vendor /app /app
 COPY bin /app/bin
 COPY config /app/config
-# Symfony's cache and the queue folder, as in the webhook image.
+# Symfony's cache, as in the webhook image.
 RUN php /app/bin/console cache:warmup \
-    && mkdir -p /app/var/queue \
     && chgrp -R 0 /app/var \
-    && chmod -R g=u /app/var/cache \
-    && chmod 2775 /app/var/queue
+    && chmod -R g=u /app/var/cache
 USER java
 
 CMD ["php", "/app/bin/console", "app:worker"]
