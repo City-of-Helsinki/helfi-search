@@ -6,11 +6,7 @@ each page is split into chunks and embedded with OpenAI, and sites send a
 webhook when content changes, so changed pages are reindexed within about a
 minute.
 
-```
-hel.fi site ──POST /webhook──▶ webhook ──▶ Redis queue ──▶ workers ──▶ Elasticsearch
-                                                              ▲
-                               full crawl (app:crawl) ────────┘
-```
+![A hel.fi site sends POST /webhook to the webhook, which adds the change to the Redis queue; workers apply the queued changes to Elasticsearch, and the full crawl indexes into Elasticsearch too.](docs/architecture.svg)
 
 - **webhook** ([FrankenPHP](https://frankenphp.dev)): accepts change
   notifications for the sites in `config/crawler.yml` and adds them to the
@@ -25,13 +21,7 @@ Every part can run as several replicas at once: see
 Both crawl the same way and process the pages with the same code
 ([`src/Indexer/`](src/Indexer/)):
 
-```
-crawler ──▶ hel-fi-pages-<crawl> ──▶ clean → Markdown → chunks ──▶ hel-fi
-            (page HTML)                          ▲         (one document per page,
-                                                 │          with chunk vectors)
-                               hel-fi-embedding-cache
-                               (only new chunks are embedded)
-```
+![The crawler writes page HTML into hel-fi-pages-<crawl>; the pages are cleaned, converted to Markdown and split into chunks, and stored in hel-fi, one document per page with chunk vectors. Vectors come from hel-fi-embedding-cache, so only new chunks are embedded.](docs/indexing.svg)
 
 | Index | Contents |
 |---|---|
@@ -193,21 +183,3 @@ needed.
 - **Clean-up**: after a complete crawl, the first crawl to finish in about a
   day removes unused vectors, old deletion records and indexes left by crawls
   that crashed.
-
-## Limitations
-
-- Changes are applied about a minute after the last change to a URL, not
-  immediately.
-- Only the notified page is reindexed; listings and other pages showing the
-  same content wait for the next full crawl. Run one regularly.
-- `update` for a page that no longer exists keeps its document: send `delete`.
-  The next full crawl removes it otherwise.
-- Pages must be public; the crawler fetches them anonymously.
-- Only HTML pages are indexed, not attachments (PDFs etc.).
-- Sites without `<meta name="helfi_content_type">` get no `entity_bundle`.
-- The content cleaning is tuned for hel.fi platform pages
-  (`<main class="layout-main-wrapper">`, its CSS classes); on other layouts,
-  menus and other page chrome can end up in the content.
-- Changing a page's intro re-embeds all its chunks: every chunk includes its
-  parent section's snippet as context.
-- One token for all sites, and no rate limiting.

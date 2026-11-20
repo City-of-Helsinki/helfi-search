@@ -1,0 +1,52 @@
+<svg xmlns="http://www.w3.org/2000/svg" width="960" height="250" viewBox="0 0 960 250" role="img" aria-labelledby="title desc">
+  <title id="title">How pages are indexed</title>
+  <desc id="desc">The crawler writes each page's HTML into an index of the crawl's own, hel-fi-pages-crawl. The pages are cleaned, converted to Markdown and split into chunks, and stored in hel-fi, one document per page with chunk vectors. The embedding cache, hel-fi-embedding-cache, supplies vectors so only new chunks are embedded.</desc>
+  <style>
+    svg { --fg: #1f2328; --muted: #59636e; --line: #59636e; --service: #ffffff; --accent: #0969da; --store: #f6f8fa; --store-stroke: #afb8c1; }
+    @media (prefers-color-scheme: dark) {
+      svg { --fg: #f0f6fc; --muted: #9198a1; --line: #9198a1; --service: #0d1117; --accent: #4493f8; --store: #212830; --store-stroke: #3d444d; }
+    }
+    text { font-family: -apple-system, BlinkMacSystemFont, "Segoe UI", Helvetica, Arial, sans-serif; fill: var(--fg); text-anchor: middle; }
+    .title { font-size: 14px; font-weight: 600; }
+    .sub { font-size: 12px; fill: var(--muted); }
+    .mono { font-family: ui-monospace, SFMono-Regular, Menlo, Consolas, monospace; }
+    .service { fill: var(--service); stroke: var(--accent); stroke-width: 1.5; }
+    .store { fill: var(--store); stroke: var(--store-stroke); stroke-width: 1.5; }
+    .edge { stroke: var(--line); stroke-width: 1.5; fill: none; marker-end: url(#arrow); }
+    .head { fill: var(--line); }
+  </style>
+  <defs>
+    <marker id="arrow" viewBox="0 0 10 10" refX="9" refY="5" markerWidth="6" markerHeight="6" orient="auto-start-reverse">
+      <path class="head" d="M0 0L10 5L0 10z"/>
+    </marker>
+  </defs>
+
+  <!-- Boxes -->
+  <rect class="service" x="20" y="30" width="110" height="84" rx="8"/>
+  <text class="title" x="75" y="66">crawler</text>
+  <text class="sub" x="75" y="86">Open Crawler</text>
+
+  <rect class="store" x="170" y="30" width="190" height="84" rx="8"/>
+  <text class="title mono" x="265" y="58">hel-fi-pages-&lt;crawl&gt;</text>
+  <text class="sub" x="265" y="78">page HTML,</text>
+  <text class="sub" x="265" y="94">one index per crawl</text>
+
+  <rect class="service" x="400" y="30" width="240" height="84" rx="8"/>
+  <text class="title" x="520" y="66">clean → Markdown → chunks</text>
+  <text class="sub mono" x="520" y="86">src/Indexer/</text>
+
+  <rect class="store" x="680" y="30" width="260" height="84" rx="8"/>
+  <text class="title mono" x="810" y="58">hel-fi</text>
+  <text class="sub" x="810" y="78">one document per page,</text>
+  <text class="sub" x="810" y="94">with chunk vectors</text>
+
+  <rect class="store" x="400" y="160" width="240" height="72" rx="8"/>
+  <text class="title mono" x="520" y="190">hel-fi-embedding-cache</text>
+  <text class="sub" x="520" y="210">only new chunks are embedded</text>
+
+  <!-- Edges -->
+  <path class="edge" d="M130 72H169"/>
+  <path class="edge" d="M360 72H399"/>
+  <path class="edge" d="M640 72H679"/>
+  <path class="edge" d="M520 160V115"/>
+</svg>
